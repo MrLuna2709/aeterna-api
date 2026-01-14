@@ -1,76 +1,104 @@
 import mysql.connector
-from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 
 app = FastAPI()
 
-# Esto permite que cualquier aplicación (Web o Android) se conecte
+# --- CONFIGURACIÓN DE CORS (Indispensable para la Persona O) ---
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"], # Permite todos los orígenes
+    allow_origins=["*"],  # Permite conexiones desde cualquier origen
     allow_credentials=True,
-    allow_methods=["*"], # Permite todos los métodos (GET, POST, etc.)
+    allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Función para conectar con Workbench
+# --- FUNCIÓN DE CONEXIÓN A RAILWAY ---
 def conectar():
     return mysql.connector.connect(
         host="tramway.proxy.rlwy.net",
         user="root",
-        password="UoIWKLOUCqSrMhnrGmrVPxLQfRtgtdVh", 
+        password="UoIWKLOUCqSrMhnrGmrVPxLQfRtgtdVh", # Tu Master Password
         database="railway",
-        port=59943
+        port=59943,
+        autocommit=True
     )
 
-class LoginData(BaseModel):
-    username: str
-    password: str
-
+# --- ENDPOINT: LOGIN ---
 @app.post("/login")
-def login(data: LoginData):
+def login(username: str = Query(...), password: str = Query(...)):
+    print(f"DEBUG: Intento de login para usuario: {username}")
     db = conectar()
     cursor = db.cursor(dictionary=True)
-    # Buscamos en la base de datos
-    cursor.execute("SELECT * FROM usuarios WHERE username = %s AND password = %s", 
-                   (data.username, data.password))
-    usuario = cursor.fetchone()
-    db.close()
+    try:
+        # Buscamos al usuario por credenciales
+        query = "SELECT id_usuario, rol, nombre_completo, sesion_activa FROM usuarios WHERE username=%s AND password=%s"
+        cursor.execute(query, (username, password))
+        user = cursor.fetchone()
+
+        if not user:
+            raise HTTPException(status_code=401, detail="Usuario o contraseña incorrectos")
+
+        # Si es un CLIENTE, obtenemos su ID de la tabla clientes
+        if user['rol'] == 'CLIENTE':
+            cursor.execute("SELECT id_cliente FROM clientes WHERE id_usuario=%s", (user['id_usuario'],))
+            cliente_data = cursor.fetchone()
+            if cliente_data:
+                user['id_cliente'] = cliente_data['id_cliente']
+
+        return {"status": "success", "user": user}
     
-    if usuario:
-        return {"status": "ok", "mensaje": "Bienvenido"}
-    raise HTTPException(status_code=401, detail="Error de acceso")
+    except mysql.connector.Error as err:
+        raise HTTPException(status_code=500, detail=f"Error de DB: {err}")
+    finally:
+        cursor.close()
+        db.close()
 
-# --- AQUÍ ESTÁ EL CORAZÓN DEL CASO 8 ---
-class Prestamo(BaseModel):
-    cliente: str
-    monto: float
-    meses: int
-
-
-@app.post("/registrar_prestamo")
-def registrar(p: Prestamo):
-    # Lógica del Caso 8 (5% de interés mensual sobre el monto)
-    # Ejemplo: Si pide 1000 a 10 meses -> Pago base 100 + Interés 50 = 150 mensual
-    pago_base = p.monto / p.meses
-    interes_mensual = p.monto * 0.05
-    cuota_final = pago_base + interes_mensual
-    
+# --- ENDPOINT: REGISTRO DE CLIENTE ---
+@app.post("/registrar_cliente")
+def registrar(username: str = Query(...), passw: str = Query(...), nombre: str = Query(...), curp: str = Query(...)):
     db = conectar()
     cursor = db.cursor()
+    try:
+        # 1. Insertar en la tabla usuarios
+        cursor.execute(
+            "INSERT INTO usuarios (username, password, rol, nombre_completo, estado) VALUES (%s, %s, 'CLIENTE', %s, 'Activo')",
+            (username, passw, nombre)
+        )
+        id_u = cursor.lastrowid
+
+        # 2. Insertar en la tabla clientes
+        cursor.execute(
+            "INSERT INTO clientes (id_usuario, curp, estatus) VALUES (%s, %s, 'Activo')",
+            (id_u, curp)
+        )
+        
+        return {"status": "success", "message": "Cliente registrado correctamente"}
     
-    # Asegúrate de que los nombres de las columnas coincidan con tu tabla
-    sql = "INSERT INTO prestamos (cliente, monto_prestamo, plazo_meses, cuota_mensual) VALUES (%s, %s, %s, %s)"
-    valores = (p.cliente, p.monto, p.meses, cuota_final)
-    
-    cursor.execute(sql, valores)
-    
-    db.commit() # <--- ¡ESTA LÍNEA ES VITAL! Sin esto, Railway no guarda nada.
-    
-    db.close()
-    
-    return {
-        "status": "success", 
-        "cuota": round(cuota_final, 2)
-    }
+    except mysql.connector.Error as err:
+        raise HTTPException(status_code=400, detail=f"Error al registrar: {err}")
+    finally:
+        cursor.close()
+        db.close()
+
+# --- ENDPOINT: SOLICITUD DE PRÉSTAMO ---
+@app.post("/cliente/prestamo")
+def solicitar_prestamo(id_cliente: int = Query(...), monto: float = Query(...), meses: int = Query(...)):
+    db = conectar()
+    cursor = db.cursor()
+    try:
+        # Insertar la solicitud (Ajusta los nombres de columna según tu tabla prestamos)
+        cursor.execute(
+            "INSERT INTO prestamos (id_cliente, monto, meses, estado) VALUES (%s, %s, %s, 'Pendiente')",
+            (id_cliente, monto, meses)
+        )
+        return {"status": "success", "message": "Solicitud enviada"}
+    except mysql.connector.Error as err:
+        raise HTTPException(status_code=500, detail=str(err))
+    finally:
+        cursor.close()
+        db.close()
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)

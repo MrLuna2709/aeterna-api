@@ -4,10 +4,10 @@ from fastapi.middleware.cors import CORSMiddleware
 
 app = FastAPI()
 
-# --- CONFIGURACIÓN DE CORS (Indispensable para la Persona O) ---
+# --- CONFIGURACIÓN DE CORS ---
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Permite conexiones desde cualquier origen
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -18,76 +18,54 @@ def conectar():
     return mysql.connector.connect(
         host="tramway.proxy.rlwy.net",
         user="root",
-        password="UoIWKLOUCqSrMhnrGmrVPxLQfRtgtdVh", # Tu Master Password
+        password="UoIWKLOUCqSrMhnrGmrVPxLQfRtgtdVh",
         database="railway",
         port=59943,
         autocommit=True
     )
 
-# --- ENDPOINT: LOGIN ---
 @app.post("/login")
 def login(username: str = Query(...), password: str = Query(...)):
-    print(f"DEBUG: Intento de login para usuario: {username}")
     db = conectar()
     cursor = db.cursor(dictionary=True)
     try:
-        # Buscamos al usuario por credenciales
-        query = "SELECT id_usuario, rol, nombre_completo, sesion_activa FROM usuarios WHERE username=%s AND password=%s"
-        cursor.execute(query, (username, password))
+        cursor.execute("SELECT id_usuario, rol, nombre_completo FROM usuarios WHERE username=%s AND password=%s", (username, password))
         user = cursor.fetchone()
 
         if not user:
             raise HTTPException(status_code=401, detail="Usuario o contraseña incorrectos")
 
-        # Si es un CLIENTE, obtenemos su ID de la tabla clientes
         if user['rol'] == 'CLIENTE':
             cursor.execute("SELECT id_cliente FROM clientes WHERE id_usuario=%s", (user['id_usuario'],))
-            cliente_data = cursor.fetchone()
-            if cliente_data:
-                user['id_cliente'] = cliente_data['id_cliente']
+            cliente_info = cursor.fetchone()
+            if cliente_info:
+                user['id_cliente'] = cliente_info['id_cliente']
+            else:
+                user['id_cliente'] = None 
 
         return {"status": "success", "user": user}
-    
-    except mysql.connector.Error as err:
-        raise HTTPException(status_code=500, detail=f"Error de DB: {err}")
     finally:
-        cursor.close()
         db.close()
 
-# --- ENDPOINT: REGISTRO DE CLIENTE ---
 @app.post("/registrar_cliente")
 def registrar(username: str = Query(...), passw: str = Query(...), nombre: str = Query(...), curp: str = Query(...)):
     db = conectar()
     cursor = db.cursor()
     try:
-        # 1. Insertar en la tabla usuarios
-        cursor.execute(
-            "INSERT INTO usuarios (username, password, rol, nombre_completo, estado) VALUES (%s, %s, 'CLIENTE', %s, 'Activo')",
-            (username, passw, nombre)
-        )
+        cursor.execute("INSERT INTO usuarios (username, password, rol, nombre_completo, estado) VALUES (%s, %s, 'CLIENTE', %s, 'Activo')", (username, passw, nombre))
         id_u = cursor.lastrowid
-
-        # 2. Insertar en la tabla clientes
-        cursor.execute(
-            "INSERT INTO clientes (id_usuario, curp, estatus) VALUES (%s, %s, 'Activo')",
-            (id_u, curp)
-        )
-        
-        return {"status": "success", "message": "Cliente registrado correctamente"}
-    
-    except mysql.connector.Error as err:
-        raise HTTPException(status_code=400, detail=f"Error al registrar: {err}")
+        cursor.execute("INSERT INTO clientes (id_usuario, curp, estatus) VALUES (%s, %s, 'Activo')", (id_u, curp))
+        return {"status": "success", "detail": "Usuario registrado correctamente"}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
     finally:
-        cursor.close()
         db.close()
 
-# --- ENDPOINT: SOLICITUD DE PRÉSTAMO ---
 @app.post("/cliente/prestamo")
 def solicitar_prestamo(id_cliente: int = Query(...), monto: float = Query(...), meses: int = Query(...)):
     db = conectar()
     cursor = db.cursor()
     try:
-        # Insertar la solicitud (Ajusta los nombres de columna según tu tabla prestamos)
         cursor.execute(
             "INSERT INTO prestamos (id_cliente, monto, meses, estado) VALUES (%s, %s, %s, 'Pendiente')",
             (id_cliente, monto, meses)
@@ -96,7 +74,21 @@ def solicitar_prestamo(id_cliente: int = Query(...), monto: float = Query(...), 
     except mysql.connector.Error as err:
         raise HTTPException(status_code=500, detail=str(err))
     finally:
-        cursor.close()
+        db.close()
+
+# --- CORRECCIÓN DE SANGRIÁ AQUÍ: Esta función ya no está dentro de la anterior ---
+@app.get("/cliente/mis_prestamos")
+def obtener_prestamos(id_cliente: int = Query(...)):
+    db = conectar()
+    cursor = db.cursor(dictionary=True)
+    try:
+        query = "SELECT id_prestamo, monto, meses, estado FROM prestamos WHERE id_cliente = %s"
+        cursor.execute(query, (id_cliente,))
+        prestamos = cursor.fetchall()
+        return prestamos
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
         db.close()
 
 if __name__ == "__main__":

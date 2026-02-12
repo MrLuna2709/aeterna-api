@@ -213,7 +213,7 @@ def solicitar_prestamo(request: PrestamoRequest):
             ORDER BY id DESC LIMIT 1
         """)
         config = cursor.fetchone()
-        tasa = config[0] if config else 0.05
+        tasa = float(config[0]) if config else 0.05  
         
         # Crear préstamo
         cursor.execute("""
@@ -242,6 +242,7 @@ def solicitar_prestamo(request: PrestamoRequest):
         raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
     finally:
         db.close()
+
 
 def generar_calendario_pagos(cursor, id_prestamo, monto, tasa_mensual, plazo_meses):
     """Genera calendario de pagos automáticamente"""
@@ -541,3 +542,4 @@ def obtener_estadisticas():
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)
+

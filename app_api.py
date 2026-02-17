@@ -5,7 +5,7 @@ from pydantic import BaseModel
 from typing import Optional, List
 from datetime import datetime, timedelta
 
-app = FastAPI(title="Monte de Piedad API", version="2.1")
+app = FastAPI(title="Monte de Piedad API", version="2.1.1")
 
 # ==================== CORS ====================
 app.add_middleware(
@@ -430,4 +430,5 @@ def obtener_estadisticas():
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)
+
 

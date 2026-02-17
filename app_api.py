@@ -92,7 +92,7 @@ def generar_calendario_pagos(cursor, id_prestamo, monto, tasa_mensual, plazo_mes
 def root():
     return {
         "message": "API Monte de Piedad - Activa",
-        "version": "2.0",
+        "version": "2.1.1",
         "endpoints": [
             "/login",
             "/registrar_cliente",
@@ -430,5 +430,6 @@ def obtener_estadisticas():
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)
+
 
 

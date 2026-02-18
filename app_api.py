@@ -4,8 +4,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Optional, List
 from datetime import datetime, timedelta
+import hashlib
+import secrets
 
-app = FastAPI(title="Monte de Piedad API", version="2.1.1")
+app = FastAPI(title="Monte de Piedad API", version="3.0")
 
 # ==================== CORS ====================
 app.add_middleware(
@@ -61,6 +63,22 @@ class AprobarPrestamoRequest(BaseModel):
     id_prestamo: int
     aprobado: bool
 
+class RegistrarPagoRequest(BaseModel):
+    id_pago: int
+    id_empleado: int
+    metodo_pago: str  # EFECTIVO, TRANSFERENCIA, TARJETA
+
+class CrearEmpleadoRequest(BaseModel):
+    username: str
+    password: str
+    nombre_completo: str
+    rol: str  # ADMIN o EMPLEADO
+
+class VerificarCodigoRequest(BaseModel):
+    email: str
+    codigo: str
+    nueva_password: str
+
 # ==================== HELPER ====================
 
 def generar_calendario_pagos(cursor, id_prestamo, monto, tasa_mensual, plazo_meses):
@@ -85,6 +103,17 @@ def generar_calendario_pagos(cursor, id_prestamo, monto, tasa_mensual, plazo_mes
             VALUES (%s, %s, %s, %s, 'PENDIENTE')
         """, (id_prestamo, i + 1, round(cuota, 2), fecha_vencimiento))
 
+def generar_folio():
+    """Genera folio único para ticket: TKT-YYYYMMDD-XXXXXX"""
+    fecha = datetime.now().strftime('%Y%m%d')
+    random = secrets.token_hex(3).upper()  # 6 caracteres hexadecimales
+    return f"TKT-{fecha}-{random}"
+
+def generar_firma_digital(folio, id_pago, monto):
+    """Genera hash SHA256 como firma digital del ticket"""
+    data = f"{folio}-{id_pago}-{monto}-{datetime.now().isoformat()}"
+    return hashlib.sha256(data.encode()).hexdigest()
+
 # ==================== ENDPOINTS ====================
 
 # ROOT
@@ -92,18 +121,26 @@ def generar_calendario_pagos(cursor, id_prestamo, monto, tasa_mensual, plazo_mes
 def root():
     return {
         "message": "API Monte de Piedad - Activa",
-        "version": "2.1.1",
+        "version": "3.0",
         "endpoints": [
-            "/login",
-            "/registrar_cliente",
-            "/cliente/prestamo",
-            "/cliente/mis_prestamos",
-            "/cliente/cartera",
-            "/cliente/pagos/{id_prestamo}",
-            "/configuracion_sistema",
-            "/admin/prestamos_pendientes",
-            "/admin/aprobar_prestamo",
-            "/admin/estadisticas"
+            "POST /login",
+            "POST /registrar_cliente",
+            "POST /cliente/prestamo",
+            "GET /cliente/mis_prestamos",
+            "GET /cliente/cartera",
+            "GET /cliente/pagos/{id_prestamo}",
+            "GET /configuracion_sistema",
+            "PUT /configuracion_sistema/{id}",
+            "GET /admin/prestamos_pendientes",
+            "POST /admin/aprobar_prestamo",
+            "GET /admin/estadisticas",
+            "POST /admin/crear_empleado",
+            "POST /empleado/registrar_pago",
+            "GET /empleado/pagos_pendientes",
+            "GET /empleado/corte_caja",
+            "GET /tickets/{folio}",
+            "POST /verificar_codigo",
+            "POST /solicitar_codigo"
         ]
     }
 
@@ -215,8 +252,14 @@ def solicitar_prestamo(request: PrestamoRequest):
         """, (request.id_cliente, monto, monto, tasa, meses))
 
         id_prestamo = cursor.lastrowid
-        generar_calendario_pagos(cursor, id_prestamo, monto, tasa, meses)
-
+        
+        # ✅ VERIFICAR QUE NO EXISTAN PAGOS ANTES DE GENERARLOS
+        cursor.execute("SELECT COUNT(*) FROM pagos WHERE id_prestamo = %s", (id_prestamo,))
+        pagos_existentes = cursor.fetchone()[0]
+        
+        if pagos_existentes == 0:
+            generar_calendario_pagos(cursor, id_prestamo, monto, tasa, meses)
+        
         db.commit()
         return {
             "status": "success",
@@ -427,9 +470,341 @@ def obtener_estadisticas():
     finally:
         db.close()
 
+# ==================== NUEVOS ENDPOINTS - FASE 1 ====================
+
+# 12. CREAR EMPLEADO (ADMIN)
+@app.post("/admin/crear_empleado")
+def crear_empleado(request: CrearEmpleadoRequest):
+    db = conectar()
+    cursor = db.cursor()
+    try:
+        # Validar que el rol sea válido
+        if request.rol.upper() not in ['ADMIN', 'EMPLEADO']:
+            raise HTTPException(status_code=400, detail="Rol inválido. Use ADMIN o EMPLEADO")
+        
+        # Verificar que el username no exista
+        cursor.execute("SELECT id_usuario FROM usuarios WHERE username = %s", (request.username,))
+        if cursor.fetchone():
+            raise HTTPException(status_code=400, detail="El usuario ya existe")
+        
+        cursor.execute("""
+            INSERT INTO usuarios (username, password, nombre_completo, rol, estado)
+            VALUES (%s, %s, %s, %s, 'Activo')
+        """, (request.username, request.password, request.nombre_completo, request.rol.upper()))
+        
+        db.commit()
+        return {"status": "success", "message": f"{request.rol} creado correctamente", "id_usuario": cursor.lastrowid}
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        db.close()
+
+# 13. REGISTRAR PAGO Y GENERAR TICKET (EMPLEADO)
+@app.post("/empleado/registrar_pago")
+def registrar_pago(request: RegistrarPagoRequest):
+    db = conectar()
+    cursor = db.cursor(dictionary=True)
+    try:
+        db.start_transaction()
+        
+        # Verificar que el pago existe y está pendiente
+        cursor.execute("""
+            SELECT p.*, pr.id_cliente, pr.saldo_pendiente
+            FROM pagos p
+            JOIN prestamos pr ON p.id_prestamo = pr.id_prestamo
+            WHERE p.id_pago = %s
+        """, (request.id_pago,))
+        pago = cursor.fetchone()
+        
+        if not pago:
+            raise HTTPException(status_code=404, detail="Pago no encontrado")
+        
+        if pago['estado'] == 'PAGADO':
+            raise HTTPException(status_code=400, detail="Este pago ya fue registrado")
+        
+        monto_pago = float(pago['monto'])
+        
+        # Generar folio y firma
+        folio = generar_folio()
+        firma = generar_firma_digital(folio, request.id_pago, monto_pago)
+        
+        # Insertar ticket
+        cursor.execute("""
+            INSERT INTO tickets_pagos 
+            (folio, id_pago, id_empleado, metodo_pago, monto_pagado, firma_digital)
+            VALUES (%s, %s, %s, %s, %s, %s)
+        """, (folio, request.id_pago, request.id_empleado, request.metodo_pago, monto_pago, firma))
+        
+        id_ticket = cursor.lastrowid
+        
+        # Actualizar estado del pago
+        cursor.execute("""
+            UPDATE pagos 
+            SET estado = 'PAGADO', fecha_pago = NOW(), cobrado_por = %s
+            WHERE id_pago = %s
+        """, (request.id_empleado, request.id_pago))
+        
+        # Actualizar saldo pendiente del préstamo
+        nuevo_saldo = float(pago['saldo_pendiente']) - monto_pago
+        cursor.execute("""
+            UPDATE prestamos 
+            SET saldo_pendiente = %s
+            WHERE id_prestamo = %s
+        """, (nuevo_saldo, pago['id_prestamo']))
+        
+        # Si saldo es 0, marcar como liquidado
+        if nuevo_saldo <= 0.01:
+            cursor.execute("""
+                UPDATE prestamos 
+                SET estado = 'LIQUIDADO'
+                WHERE id_prestamo = %s
+            """, (pago['id_prestamo'],))
+        
+        db.commit()
+        
+        return {
+            "status": "success",
+            "message": "Pago registrado correctamente",
+            "folio": folio,
+            "id_ticket": id_ticket,
+            "monto_pagado": monto_pago,
+            "nuevo_saldo": nuevo_saldo
+        }
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
+    finally:
+        db.close()
+
+# 14. PAGOS PENDIENTES DEL DÍA (EMPLEADO)
+@app.get("/empleado/pagos_pendientes")
+def obtener_pagos_pendientes_dia():
+    db = conectar()
+    cursor = db.cursor(dictionary=True)
+    try:
+        cursor.execute("""
+            SELECT 
+                p.id_pago,
+                p.numero_pago,
+                p.monto,
+                p.fecha_vencimiento,
+                pr.id_prestamo,
+                pr.monto_total,
+                pr.saldo_pendiente,
+                CONCAT(c.nombre, ' ', c.apellido_paterno, ' ', c.apellido_materno) as nombre_cliente,
+                c.telefono
+            FROM pagos p
+            JOIN prestamos pr ON p.id_prestamo = pr.id_prestamo
+            JOIN clientes c ON pr.id_cliente = c.id_cliente
+            WHERE p.estado = 'PENDIENTE'
+            AND pr.estado IN ('ACTIVO', 'MORA')
+            ORDER BY p.fecha_vencimiento ASC
+            LIMIT 100
+        """)
+        pagos = cursor.fetchall()
+        for p in pagos:
+            p['monto'] = float(p['monto'])
+            p['monto_total'] = float(p['monto_total'])
+            p['saldo_pendiente'] = float(p['saldo_pendiente'])
+            if p['fecha_vencimiento']:
+                p['fecha_vencimiento'] = p['fecha_vencimiento'].strftime('%Y-%m-%d')
+        return pagos
+    finally:
+        db.close()
+
+# 15. CORTE DE CAJA (EMPLEADO)
+@app.get("/empleado/corte_caja")
+def obtener_corte_caja(id_empleado: int = Query(...), fecha: Optional[str] = None):
+    db = conectar()
+    cursor = db.cursor(dictionary=True)
+    try:
+        if not fecha:
+            fecha = datetime.now().strftime('%Y-%m-%d')
+        
+        cursor.execute("""
+            SELECT 
+                t.folio,
+                t.metodo_pago,
+                t.monto_pagado,
+                t.fecha_generacion,
+                p.numero_pago,
+                pr.id_prestamo,
+                CONCAT(c.nombre, ' ', c.apellido_paterno) as cliente
+            FROM tickets_pagos t
+            JOIN pagos p ON t.id_pago = p.id_pago
+            JOIN prestamos pr ON p.id_prestamo = pr.id_prestamo
+            JOIN clientes c ON pr.id_cliente = c.id_cliente
+            WHERE t.id_empleado = %s
+            AND DATE(t.fecha_generacion) = %s
+            AND t.estado = 'ACTIVO'
+            ORDER BY t.fecha_generacion DESC
+        """, (id_empleado, fecha))
+        
+        tickets = cursor.fetchall()
+        
+        total_efectivo = 0
+        total_transferencia = 0
+        total_tarjeta = 0
+        
+        for t in tickets:
+            monto = float(t['monto_pagado'])
+            t['monto_pagado'] = monto
+            t['fecha_generacion'] = t['fecha_generacion'].strftime('%Y-%m-%d %H:%M:%S')
+            
+            if t['metodo_pago'] == 'EFECTIVO':
+                total_efectivo += monto
+            elif t['metodo_pago'] == 'TRANSFERENCIA':
+                total_transferencia += monto
+            elif t['metodo_pago'] == 'TARJETA':
+                total_tarjeta += monto
+        
+        return {
+            "fecha": fecha,
+            "total_tickets": len(tickets),
+            "total_efectivo": total_efectivo,
+            "total_transferencia": total_transferencia,
+            "total_tarjeta": total_tarjeta,
+            "total_general": total_efectivo + total_transferencia + total_tarjeta,
+            "tickets": tickets
+        }
+    finally:
+        db.close()
+
+# 16. BUSCAR TICKET POR FOLIO
+@app.get("/tickets/{folio}")
+def buscar_ticket(folio: str):
+    db = conectar()
+    cursor = db.cursor(dictionary=True)
+    try:
+        cursor.execute("""
+            SELECT 
+                t.*,
+                p.numero_pago,
+                p.monto as monto_cuota,
+                pr.id_prestamo,
+                pr.monto_total,
+                pr.saldo_pendiente,
+                CONCAT(c.nombre, ' ', c.apellido_paterno, ' ', c.apellido_materno) as cliente,
+                c.curp,
+                u.nombre_completo as empleado
+            FROM tickets_pagos t
+            JOIN pagos p ON t.id_pago = p.id_pago
+            JOIN prestamos pr ON p.id_prestamo = pr.id_prestamo
+            JOIN clientes c ON pr.id_cliente = c.id_cliente
+            JOIN usuarios u ON t.id_empleado = u.id_usuario
+            WHERE t.folio = %s
+        """, (folio,))
+        
+        ticket = cursor.fetchone()
+        
+        if not ticket:
+            raise HTTPException(status_code=404, detail="Ticket no encontrado")
+        
+        ticket['monto_pagado'] = float(ticket['monto_pagado'])
+        ticket['monto_cuota'] = float(ticket['monto_cuota'])
+        ticket['monto_total'] = float(ticket['monto_total'])
+        ticket['saldo_pendiente'] = float(ticket['saldo_pendiente'])
+        ticket['fecha_generacion'] = ticket['fecha_generacion'].strftime('%Y-%m-%d %H:%M:%S')
+        
+        return ticket
+    finally:
+        db.close()
+
+# 17. SOLICITAR CÓDIGO DE RECUPERACIÓN
+@app.post("/solicitar_codigo")
+def solicitar_codigo(email: str = Query(...)):
+    db = conectar()
+    cursor = db.cursor()
+    try:
+        # Verificar que el email existe
+        cursor.execute("SELECT id_usuario FROM usuarios WHERE username = %s", (email,))
+        usuario = cursor.fetchone()
+        
+        if not usuario:
+            raise HTTPException(status_code=404, detail="El correo no está registrado")
+        
+        # Generar código de 6 dígitos
+        import random
+        codigo = str(random.randint(100000, 999999))
+        
+        # Guardar código en BD
+        cursor.execute("""
+            UPDATE usuarios 
+            SET codigo_recuperacion = %s, fecha_codigo = NOW()
+            WHERE username = %s
+        """, (codigo, email))
+        
+        db.commit()
+        
+        # TODO: Aquí iría el envío real del email
+        # Por ahora solo retornamos éxito
+        
+        return {
+            "status": "success",
+            "message": f"Código enviado a {email}",
+            "codigo_debug": codigo  # ELIMINAR EN PRODUCCIÓN
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        db.close()
+
+# 18. VERIFICAR CÓDIGO Y CAMBIAR CONTRASEÑA
+@app.post("/verificar_codigo")
+def verificar_codigo(request: VerificarCodigoRequest):
+    db = conectar()
+    cursor = db.cursor(dictionary=True)
+    try:
+        # Verificar código
+        cursor.execute("""
+            SELECT id_usuario, codigo_recuperacion, fecha_codigo
+            FROM usuarios
+            WHERE username = %s
+        """, (request.email,))
+        
+        usuario = cursor.fetchone()
+        
+        if not usuario:
+            raise HTTPException(status_code=404, detail="Usuario no encontrado")
+        
+        if not usuario['codigo_recuperacion']:
+            raise HTTPException(status_code=400, detail="No hay código pendiente")
+        
+        if usuario['codigo_recuperacion'] != request.codigo:
+            raise HTTPException(status_code=401, detail="Código incorrecto")
+        
+        # Verificar que el código no haya expirado (15 minutos)
+        if usuario['fecha_codigo']:
+            tiempo_transcurrido = datetime.now() - usuario['fecha_codigo']
+            if tiempo_transcurrido.total_seconds() > 900:  # 15 minutos
+                raise HTTPException(status_code=410, detail="El código ha expirado")
+        
+        # Actualizar contraseña
+        cursor.execute("""
+            UPDATE usuarios
+            SET password = %s, codigo_recuperacion = NULL, fecha_codigo = NULL
+            WHERE username = %s
+        """, (request.nueva_password, request.email))
+        
+        db.commit()
+        
+        return {"status": "success", "message": "Contraseña actualizada correctamente"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        db.close()
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)
-
-
-

@@ -4,6 +4,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Optional, List
 from datetime import datetime, timedelta
+from decimal import Decimal
 import hashlib
 import secrets
 
@@ -78,6 +79,21 @@ class VerificarCodigoRequest(BaseModel):
     email: str
     codigo: str
     nueva_password: str
+
+class LiquidarPrestamoRequest(BaseModel):
+    id_prestamo: int
+    id_empleado: int
+    metodo_pago: str = "EFECTIVO"
+
+class ActualizarPerfilRequest(BaseModel):
+    id_cliente: int
+    nombre: str
+    apellido_paterno: str
+    apellido_materno: str
+    telefono: str
+    email: str
+    direccion: str
+
 
 # ==================== HELPER ====================
 
@@ -808,3 +824,304 @@ def verificar_codigo(request: VerificarCodigoRequest):
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)
+
+# ==================== ENDPOINTS NUEVOS - LIQUIDACIÓN ====================
+
+@app.post("/empleado/liquidar_prestamo")
+def liquidar_prestamo_completo(request: LiquidarPrestamoRequest):
+    """Pagar todo el préstamo de una vez con descuento opcional"""
+    db = conectar()
+    cursor = db.cursor(dictionary=True)
+    try:
+        db.start_transaction()
+        
+        cursor.execute("""
+            SELECT pr.saldo_pendiente, pr.monto_total, pr.plazo_meses,
+                   CONCAT(c.nombre, ' ', c.apellido_paterno) as nombre_cliente
+            FROM prestamos pr
+            JOIN clientes c ON pr.id_cliente = c.id_cliente
+            WHERE pr.id_prestamo = %s
+        """, (request.id_prestamo,))
+        
+        prestamo = cursor.fetchone()
+        
+        if not prestamo:
+            raise HTTPException(status_code=404, detail="Préstamo no encontrado")
+        
+        saldo = float(prestamo['saldo_pendiente'])
+        
+        if saldo <= 0:
+            raise HTTPException(status_code=400, detail="El préstamo ya está liquidado")
+        
+        # Descuento 3%
+        descuento = saldo * 0.03
+        total_a_pagar = saldo - descuento
+        
+        folio = generar_folio()
+        firma = generar_firma_digital(folio, request.id_prestamo, total_a_pagar)
+        
+        cursor.execute("""
+            INSERT INTO tickets_pagos 
+            (folio, id_pago, id_empleado, metodo_pago, monto_pagado, firma_digital, tipo)
+            VALUES (%s, NULL, %s, %s, %s, %s, 'LIQUIDACION')
+        """, (folio, request.id_empleado, request.metodo_pago, total_a_pagar, firma))
+        
+        id_ticket = cursor.lastrowid
+        
+        cursor.execute("""
+            UPDATE pagos
+            SET estado = 'PAGADO', fecha_pago = NOW(), cobrado_por = %s
+            WHERE id_prestamo = %s AND estado IN ('PENDIENTE', 'ATRASADO')
+        """, (request.id_empleado, request.id_prestamo))
+        
+        pagos_liquidados = cursor.rowcount
+        
+        cursor.execute("""
+            UPDATE prestamos
+            SET saldo_pendiente = 0, 
+                estado = 'LIQUIDADO', 
+                fecha_liquidacion = NOW()
+            WHERE id_prestamo = %s
+        """, (request.id_prestamo,))
+        
+        db.commit()
+        
+        return {
+            "status": "success",
+            "message": f"Préstamo liquidado para {prestamo['nombre_cliente']}",
+            "folio": folio,
+            "id_ticket": id_ticket,
+            "saldo_anterior": saldo,
+            "descuento": descuento,
+            "total_pagado": total_a_pagar,
+            "pagos_liquidados": pagos_liquidados
+        }
+    
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
+    finally:
+        db.close()
+
+# ==================== ENDPOINT: CALCULAR MORA ====================
+
+@app.post("/sistema/calcular_mora")
+def calcular_mora_automatica():
+    """Ejecutar diariamente para actualizar estados de mora"""
+    db = conectar()
+    cursor = db.cursor(dictionary=True)
+    try:
+        try:
+            cursor.callproc('calcular_mora_diaria')
+            for result in cursor.stored_results():
+                data = result.fetchone()
+                return {
+                    "status": "success",
+                    "message": "Mora calculada con procedimiento",
+                    "pagos_actualizados": data.get('pagos_actualizados', 0),
+                    "prestamos_actualizados": data.get('prestamos_actualizados', 0)
+                }
+        except:
+            pass
+        
+        cursor.execute("""
+            UPDATE pagos p
+            JOIN prestamos pr ON p.id_prestamo = pr.id_prestamo
+            SET p.estado = 'ATRASADO'
+            WHERE p.estado = 'PENDIENTE'
+            AND p.fecha_vencimiento < CURDATE()
+            AND pr.estado IN ('ACTIVO', 'MORA')
+        """)
+        
+        pagos_actualizados = cursor.rowcount
+        
+        cursor.execute("""
+            UPDATE prestamos pr
+            SET pr.estado = 'MORA'
+            WHERE pr.estado = 'ACTIVO'
+            AND EXISTS (
+                SELECT 1 FROM pagos p 
+                WHERE p.id_prestamo = pr.id_prestamo 
+                AND p.estado = 'ATRASADO'
+            )
+        """)
+        
+        prestamos_actualizados = cursor.rowcount
+        
+        db.commit()
+        
+        return {
+            "status": "success",
+            "message": "Mora calculada correctamente",
+            "pagos_actualizados": pagos_actualizados,
+            "prestamos_actualizados": prestamos_actualizados,
+            "ejecutado_en": datetime.now().isoformat()
+        }
+    
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
+    finally:
+        db.close()
+
+# ==================== ENDPOINT: DASHBOARD ADMIN ====================
+
+@app.get("/admin/dashboard_data")
+def obtener_dashboard_data():
+    """Datos completos para dashboard con gráficos"""
+    db = conectar()
+    cursor = db.cursor(dictionary=True)
+    try:
+        try:
+            cursor.execute("SELECT * FROM vista_dashboard")
+            kpis = cursor.fetchone()
+        except:
+            cursor.execute("""
+                SELECT 
+                    (SELECT COUNT(*) FROM clientes) as total_clientes,
+                    (SELECT COUNT(*) FROM prestamos WHERE estado = 'ACTIVO') as prestamos_activos,
+                    (SELECT COUNT(*) FROM prestamos WHERE estado = 'MORA') as prestamos_mora,
+                    (SELECT COALESCE(SUM(monto_total), 0) FROM prestamos WHERE estado IN ('ACTIVO', 'MORA')) as capital_activo,
+                    (SELECT COALESCE(SUM(monto_total - saldo_pendiente), 0) FROM prestamos) as monto_recuperado,
+                    (SELECT COALESCE(SUM(saldo_pendiente), 0) FROM prestamos WHERE estado IN ('ACTIVO', 'MORA')) as saldo_pendiente
+            """)
+            kpis = cursor.fetchone()
+        
+        cursor.execute("""
+            SELECT 
+                DATE_FORMAT(fecha_creacion, '%%Y-%%m') as mes,
+                SUM(monto_total) as colocacion
+            FROM prestamos
+            WHERE fecha_creacion >= DATE_SUB(NOW(), INTERVAL 6 MONTH)
+            GROUP BY DATE_FORMAT(fecha_creacion, '%%Y-%%m')
+            ORDER BY mes
+        """)
+        colocacion = cursor.fetchall()
+        
+        cursor.execute("""
+            SELECT 
+                DATE_FORMAT(fecha_pago, '%%Y-%%m') as mes,
+                SUM(monto) as cobranza
+            FROM pagos
+            WHERE estado = 'PAGADO'
+            AND fecha_pago >= DATE_SUB(NOW(), INTERVAL 6 MONTH)
+            GROUP BY DATE_FORMAT(fecha_pago, '%%Y-%%m')
+            ORDER BY mes
+        """)
+        cobranza = cursor.fetchall()
+        
+        cursor.execute("""
+            SELECT 
+                SUM(CASE WHEN estado = 'ACTIVO' THEN 1 ELSE 0 END) as activos,
+                SUM(CASE WHEN estado = 'MORA' THEN 1 ELSE 0 END) as morosos
+            FROM prestamos
+            WHERE estado IN ('ACTIVO', 'MORA')
+        """)
+        cartera = cursor.fetchone()
+        
+        return {
+            "status": "success",
+            "kpis": {
+                "capital_activo": float(kpis['capital_activo']) if kpis['capital_activo'] else 0,
+                "monto_recuperado": float(kpis['monto_recuperado']) if kpis['monto_recuperado'] else 0,
+                "total_clientes": int(kpis['total_clientes']),
+                "prestamos_activos": int(kpis['prestamos_activos']),
+                "prestamos_mora": int(kpis['prestamos_mora'])
+            },
+            "flujo_fondos": {
+                "meses": [c['mes'] for c in colocacion],
+                "colocacion": [float(c['colocacion']) for c in colocacion],
+                "cobranza": [float(c['cobranza']) if c['cobranza'] else 0 for c in cobranza]
+            },
+            "estado_cartera": {
+                "activos": int(cartera['activos']) if cartera['activos'] else 0,
+                "morosos": int(cartera['morosos']) if cartera['morosos'] else 0
+            }
+        }
+    
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
+    finally:
+        db.close()
+
+# ==================== ENDPOINT: CLIENTES EN RIESGO ====================
+
+@app.get("/admin/clientes_riesgo")
+def obtener_clientes_riesgo(limit: int = 5):
+    """Top N clientes morosos"""
+    db = conectar()
+    cursor = db.cursor(dictionary=True)
+    try:
+        cursor.execute("""
+            SELECT 
+                CONCAT(c.nombre, ' ', c.apellido_paterno, ' ', c.apellido_materno) as nombre_completo,
+                c.curp,
+                c.telefono,
+                pr.saldo_pendiente,
+                MAX(pg.fecha_pago) as ultimo_pago,
+                DATEDIFF(NOW(), MAX(pg.fecha_vencimiento)) as dias_atraso
+            FROM prestamos pr
+            JOIN clientes c ON pr.id_cliente = c.id_cliente
+            LEFT JOIN pagos pg ON pr.id_prestamo = pg.id_prestamo AND pg.estado = 'ATRASADO'
+            WHERE pr.estado = 'MORA'
+            AND pr.saldo_pendiente > 0
+            GROUP BY pr.id_prestamo, c.id_cliente
+            ORDER BY pr.saldo_pendiente DESC, dias_atraso DESC
+            LIMIT %s
+        """, (limit,))
+        
+        clientes = cursor.fetchall()
+        
+        for cliente in clientes:
+            cliente['saldo_pendiente'] = float(cliente['saldo_pendiente'])
+        
+        return {
+            "status": "success",
+            "clientes_riesgo": clientes
+        }
+    
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
+    finally:
+        db.close()
+
+# ==================== ENDPOINT: ACTUALIZAR PERFIL ====================
+
+@app.put("/cliente/perfil")
+def actualizar_perfil_cliente(request: ActualizarPerfilRequest):
+    """Actualizar datos del perfil del cliente"""
+    db = conectar()
+    cursor = db.cursor()
+    try:
+        cursor.execute("""
+            UPDATE clientes
+            SET nombre = %s,
+                apellido_paterno = %s,
+                apellido_materno = %s,
+                telefono = %s,
+                email = %s,
+                direccion = %s
+            WHERE id_cliente = %s
+        """, (request.nombre, request.apellido_paterno, request.apellido_materno,
+              request.telefono, request.email, request.direccion, request.id_cliente))
+        
+        if cursor.rowcount == 0:
+            raise HTTPException(status_code=404, detail="Cliente no encontrado")
+        
+        db.commit()
+        
+        return {
+            "status": "success",
+            "message": "Perfil actualizado correctamente"
+        }
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
+    finally:
+        db.close()

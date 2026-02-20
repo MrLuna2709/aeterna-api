@@ -5,6 +5,13 @@ from pydantic import BaseModel
 from typing import Optional, List
 from datetime import datetime, timedelta
 from decimal import Decimal
+from notificaciones import (
+    email_bienvenida,
+    email_prestamo_aprobado,
+    email_prestamo_rechazado,
+    email_ticket_pago,
+    email_prestamo_liquidado
+)
 import hashlib
 import secrets
 
@@ -236,6 +243,15 @@ def registrar_cliente(request: RegistroRequest):
         ))
 
         db.commit()
+        
+        # ✅ Email de bienvenida
+        try:
+            nombre_completo = f"{request.nombre} {request.apellido_paterno}"
+            email_bienvenida(request.email, nombre_completo)
+            print(f"✅ Email bienvenida → {request.email}")
+        except Exception as e:
+            print(f"⚠️ Error email bienvenida: {e}")
+        
         return {"status": "success", "message": "Cliente registrado correctamente"}
     except HTTPException:
         db.rollback()
@@ -438,25 +454,88 @@ def obtener_prestamos_pendientes():
 @app.post("/admin/aprobar_prestamo")
 def aprobar_prestamo(request: AprobarPrestamoRequest):
     db = conectar()
-    cursor = db.cursor()
+    cursor = db.cursor(dictionary=True)
     try:
-        nuevo_estado = "ACTIVO" if request.aprobado else "RECHAZADO"
+        db.start_transaction()
+        
+        # Obtener datos del préstamo y cliente
         cursor.execute("""
-            UPDATE prestamos SET estado=%s WHERE id_prestamo=%s
-        """, (nuevo_estado, request.id_prestamo))
-
-        if cursor.rowcount == 0:
+            SELECT pr.*, c.email, c.nombre, c.apellido_paterno,
+                   cfg.tasa_interes
+            FROM prestamos pr
+            JOIN clientes c ON pr.id_cliente = c.id_cliente
+            CROSS JOIN configuracion_sistema cfg
+            WHERE pr.id_prestamo = %s
+        """, (request.id_prestamo,))
+        
+        prestamo = cursor.fetchone()
+        
+        if not prestamo:
             raise HTTPException(status_code=404, detail="Préstamo no encontrado")
-
+        
+        nombre_completo = f"{prestamo['nombre']} {prestamo['apellido_paterno']}"
+        
+        if request.aprobado:
+            cursor.execute("UPDATE prestamos SET estado='ACTIVO' WHERE id_prestamo=%s", 
+                          (request.id_prestamo,))
+            
+            # Calcular cuota mensual
+            monto = float(prestamo['monto_total'])
+            plazo = int(prestamo['plazo_meses'])
+            tasa_mensual = float(prestamo['tasa_interes']) / 12
+            
+            if tasa_mensual == 0:
+                cuota = monto / plazo
+            else:
+                factor = (1 + tasa_mensual) ** plazo
+                cuota = monto * (tasa_mensual * factor) / (factor - 1)
+            
+            # ✅ ENVIAR EMAIL DE APROBACIÓN
+            try:
+                email_prestamo_aprobado(
+                    prestamo['email'],
+                    nombre_completo,
+                    monto,
+                    plazo,
+                    cuota,
+                    request.id_prestamo
+                )
+                print(f"✅ Email aprobación → {prestamo['email']}")
+            except Exception as e:
+                print(f"⚠️ Error email aprobación: {e}")
+            
+            mensaje = "Préstamo aprobado y cliente notificado"
+        else:
+            cursor.execute("DELETE FROM pagos WHERE id_prestamo=%s", (request.id_prestamo,))
+            cursor.execute("UPDATE prestamos SET estado='RECHAZADO' WHERE id_prestamo=%s", 
+                          (request.id_prestamo,))
+            
+            # ✅ ENVIAR EMAIL DE RECHAZO
+            try:
+                email_prestamo_rechazado(
+                    prestamo['email'],
+                    nombre_completo,
+                    float(prestamo['monto_total'])
+                )
+                print(f"✅ Email rechazo → {prestamo['email']}")
+            except Exception as e:
+                print(f"⚠️ Error email rechazo: {e}")
+            
+            mensaje = "Préstamo rechazado y cliente notificado"
+        
         db.commit()
-        return {"status": "success", "message": f"Préstamo {nuevo_estado.lower()}"}
+        return {"status": "success", "message": mensaje}
+    
+    except HTTPException:
+        db.rollback()
+        raise
     except Exception as e:
         db.rollback()
         raise HTTPException(status_code=500, detail=str(e))
     finally:
         db.close()
 
-# 11. ESTADÍSTICAS (ADMIN)
+
 @app.get("/admin/estadisticas")
 def obtener_estadisticas():
     db = conectar()
@@ -581,6 +660,31 @@ def registrar_pago(request: RegistrarPagoRequest):
             """, (pago['id_prestamo'],))
         
         db.commit()
+        
+        # ✅ Email de ticket
+        try:
+            cursor.execute("""
+                SELECT c.email, c.nombre, c.apellido_paterno, pr.plazo_meses
+                FROM clientes c
+                JOIN prestamos pr ON c.id_cliente = pr.id_cliente
+                WHERE pr.id_prestamo = %s
+            """, (pago['id_prestamo'],))
+            
+            cliente = cursor.fetchone()
+            
+            if cliente:
+                nombre_completo = f"{cliente['nombre']} {cliente['apellido_paterno']}"
+                email_ticket_pago(
+                    destinatario=cliente['email'],
+                    folio=folio,
+                    monto=monto_pago,
+                    numero_pago=pago['numero_pago'],
+                    total_pagos=cliente['plazo_meses'],
+                    cliente=nombre_completo
+                )
+                print(f"✅ Email ticket → {cliente['email']}")
+        except Exception as e:
+            print(f"⚠️ Error email ticket: {e}")
         
         return {
             "status": "success",
@@ -886,6 +990,31 @@ def liquidar_prestamo_completo(request: LiquidarPrestamoRequest):
         
         db.commit()
         
+        # ✅ Email de liquidación
+        try:
+            cursor.execute("""
+                SELECT c.email, c.nombre, c.apellido_paterno
+                FROM clientes c
+                JOIN prestamos pr ON c.id_cliente = pr.id_cliente
+                WHERE pr.id_prestamo = %s
+            """, (request.id_prestamo,))
+            
+            cliente = cursor.fetchone()
+            
+            if cliente:
+                nombre_completo = f"{cliente['nombre']} {cliente['apellido_paterno']}"
+                email_prestamo_liquidado(
+                    destinatario=cliente['email'],
+                    nombre=nombre_completo,
+                    monto_original=saldo + descuento,
+                    descuento=descuento,
+                    total_pagado=total_a_pagar,
+                    folio=folio
+                )
+                print(f"✅ Email liquidación → {cliente['email']}")
+        except Exception as e:
+            print(f"⚠️ Error email liquidación: {e}")
+        
         return {
             "status": "success",
             "message": f"Préstamo liquidado para {prestamo['nombre_cliente']}",
@@ -1125,4 +1254,3 @@ def actualizar_perfil_cliente(request: ActualizarPerfilRequest):
         raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
     finally:
         db.close()
-

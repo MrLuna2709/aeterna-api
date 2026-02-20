@@ -1125,3 +1125,4 @@ def actualizar_perfil_cliente(request: ActualizarPerfilRequest):
         raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
     finally:
         db.close()
+

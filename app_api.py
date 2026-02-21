@@ -5,13 +5,26 @@ from pydantic import BaseModel
 from typing import Optional, List
 from datetime import datetime, timedelta
 from decimal import Decimal
-from notificaciones import (
-    email_bienvenida,
-    email_prestamo_aprobado,
-    email_prestamo_rechazado,
-    email_ticket_pago,
-    email_prestamo_liquidado
-)
+
+
+try:
+    from notificaciones import (
+        email_bienvenida,
+        email_prestamo_aprobado,
+        email_prestamo_rechazado,
+        email_ticket_pago,
+        email_prestamo_liquidado
+    )
+    NOTIFICACIONES_ENABLED = True
+    print("✅ Notificaciones habilitadas")
+except ImportError:
+    NOTIFICACIONES_ENABLED = False
+    print("⚠️ Notificaciones deshabilitadas")
+    def email_bienvenida(*args, **kwargs): pass
+    def email_prestamo_aprobado(*args, **kwargs): pass
+    def email_prestamo_rechazado(*args, **kwargs): pass
+    def email_ticket_pago(*args, **kwargs): pass
+    def email_prestamo_liquidado(*args, **kwargs): pass
 import hashlib
 import secrets
 

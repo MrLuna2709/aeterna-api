@@ -1,0 +1,63 @@
+# ==================== .gitignore ====================
+# Para proteger credenciales y archivos sensibles
+
+# Credenciales privadas
+CONFIG_EMAIL_PRIVADO.py
+*.env
+.env
+.env.local
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+fastapi-env/
+venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+
+# Bases de datos locales
+*.db
+*.sqlite
+*.sqlite3
+
+# Logs
+*.log
+logs/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Configuraciones locales específicas
+config_local.py
+secrets.py

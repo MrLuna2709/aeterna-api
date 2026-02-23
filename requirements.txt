@@ -1,21 +1,15 @@
-# ==================== REQUIREMENTS.TXT ACTUALIZADO ====================
-# Monte SIN Piedad - Dependencias Python
-
 # Framework Web
-fastapi==0.104.1
-uvicorn[standard]==0.24.0
+fastapi==0.115.0
+uvicorn[standard]==0.32.1
 
 # Base de Datos
-mysql-connector-python==8.2.0
+mysql-connector-python==9.1.0
 
 # Validación de datos
-pydantic==2.5.0
+pydantic==2.10.5
 
-# CORS
-python-multipart==0.0.6
+# CORS y multipart
+python-multipart==0.0.20
 
-# ==================== NUEVO: EMAIL CON RESEND ====================
-resend==0.8.0
-
-# ==================== OPCIONAL: Para desarrollo local ====================
-# python-dotenv==1.0.0  # Para variables de entorno locales
+# Email con Resend
+resend==2.6.1

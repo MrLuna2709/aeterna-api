@@ -1,7 +1,7 @@
 """
 ═══════════════════════════════════════════════════════════════════════════════
-API ACTUALIZADA - MONTE SIN PIEDAD
-Con Resend para emails y tabla usuarios unificada
+API FINAL - MONTE SIN PIEDAD
+Con Resend, tabla unificada, y variables de entorno para Railway
 ═══════════════════════════════════════════════════════════════════════════════
 """
 
@@ -16,22 +16,24 @@ import os
 # ==================== RESEND (reemplaza smtplib) ====================
 import resend
 
-# Configurar API key de Resend
+# Configurar API key de Resend desde variable de entorno
 resend.api_key = os.environ.get("RESEND_API_KEY", "")
 
-# ==================== CONFIGURACIÓN ====================
-app = FastAPI()
-
+# ==================== CONFIGURACIÓN BD (VARIABLES DE ENTORNO) ====================
+# Railway configura estas variables automáticamente
 DB_CONFIG = {
-    'host': 'junction.proxy.rlwy.net',
-    'port': 16661,
-    'user': 'root',
-    'password': 'rOhOhfujlMBVGnrTtIYJQLAtxcMlsBOP',
-    'database': 'railway'
+    'host': os.environ.get('MYSQLHOST', 'junction.proxy.rlwy.net'),
+    'port': int(os.environ.get('MYSQLPORT', '16661')),
+    'user': os.environ.get('MYSQLUSER', 'root'),
+    'password': os.environ.get('MYSQL_ROOT_PASSWORD', 'rOhOhfujlMBVGnrTtIYJQLAtxcMlsBOP'),
+    'database': os.environ.get('MYSQLDATABASE', 'railway')
 }
 
+# ==================== FASTAPI APP ====================
+app = FastAPI()
+
 def conectar():
-    """Conecta a la base de datos"""
+    """Conecta a la base de datos MySQL"""
     return mysql.connector.connect(**DB_CONFIG)
 
 # ==================== MODELOS ====================
@@ -50,6 +52,10 @@ class RegistroClienteRequest(BaseModel):
     telefono: Optional[str] = None
     direccion: Optional[str] = None
     no_identificacion: Optional[str] = None
+
+class VerificarEmailRequest(BaseModel):
+    email: str
+    codigo: str
 
 class RecuperacionRequest(BaseModel):
     email: str
@@ -125,6 +131,50 @@ def email_codigo_recuperacion(destinatario: str, codigo: str, nombre: str = "Usu
     
     return enviar_email_resend(destinatario, f"🔐 Código de Recuperación: {codigo}", html)
 
+def email_verificacion_cuenta(destinatario: str, codigo: str, nombre: str):
+    """Envía email con código de verificación de cuenta"""
+    html = f"""
+    <!DOCTYPE html>
+    <html>
+    <head><meta charset="UTF-8"></head>
+    <body style="font-family:Arial,sans-serif;background:#f1f5f9;margin:0;padding:20px;">
+      <div style="max-width:500px;margin:auto;background:#fff;border-radius:16px;overflow:hidden;box-shadow:0 4px 6px rgba(0,0,0,0.1);">
+        <div style="background:linear-gradient(135deg,#10b981,#059669);padding:40px;text-align:center;">
+          <h1 style="color:white;margin:0;font-size:24px;">✅ VERIFICA TU EMAIL</h1>
+        </div>
+        <div style="padding:40px 30px;">
+          <p style="color:#475569;line-height:1.6;">Hola <strong>{nombre}</strong>,</p>
+          <p style="color:#475569;line-height:1.6;">
+            ¡Bienvenido a <strong>Monte de Piedad</strong>! 
+            Para completar tu registro, verifica tu email con el siguiente código:
+          </p>
+          
+          <div style="background:#f8fafc;border:2px solid #e2e8f0;border-radius:12px;padding:30px;text-align:center;margin:30px 0;">
+            <div style="font-size:40px;font-weight:900;color:#10b981;letter-spacing:12px;font-family:'Courier New',monospace;">
+              {codigo}
+            </div>
+            <div style="font-size:12px;color:#64748b;margin-top:10px;">
+              Código de verificación
+            </div>
+          </div>
+          
+          <div style="background:#dbeafe;border-left:4px solid #3b82f6;padding:15px;border-radius:8px;">
+            <p style="font-size:14px;color:#1e40af;margin:0;">
+              ℹ️ <strong>Este código expira en 15 minutos.</strong><br>
+              Si no solicitaste esta cuenta, ignora este mensaje.
+            </p>
+          </div>
+        </div>
+        <div style="text-align:center;padding:30px;font-size:12px;color:#94a3b8;border-top:1px solid #e2e8f0;">
+          <p>© {datetime.now().year} Monte de Piedad</p>
+        </div>
+      </div>
+    </body>
+    </html>
+    """
+    
+    return enviar_email_resend(destinatario, "✅ Verifica tu cuenta - Monte de Piedad", html)
+
 def email_bienvenida(destinatario: str, nombre: str):
     """Envía email de bienvenida a nuevos clientes"""
     html = f"""
@@ -162,7 +212,24 @@ def email_bienvenida(destinatario: str, nombre: str):
     
     return enviar_email_resend(destinatario, f"🎉 ¡Bienvenido a Monte de Piedad, {nombre}!", html)
 
-# ==================== ENDPOINTS UNIFICADOS ====================
+# ==================== ENDPOINTS ====================
+
+@app.get("/")
+def root():
+    """Endpoint raíz - Info de la API"""
+    return {
+        "app": "Monte SIN Piedad API",
+        "version": "2.0",
+        "features": [
+            "Login unificado",
+            "Tabla usuarios única",
+            "Emails con Resend (HTTPS)",
+            "Recuperación de contraseña",
+            "Verificación de email",
+            "CRUD completo de usuarios"
+        ],
+        "status": "✅ Operativo"
+    }
 
 @app.post("/login")
 def login_unificado(request: LoginRequest):
@@ -177,7 +244,7 @@ def login_unificado(request: LoginRequest):
         # Buscar usuario por email en la tabla unificada
         cursor.execute("""
             SELECT id_usuario, nombre, apellido_paterno, apellido_materno, 
-                   email, rol, activo, curp, telefono
+                   email, rol, activo, email_verificado, curp, telefono
             FROM usuarios
             WHERE email = %s AND password = %s
         """, (request.email, request.password))
@@ -190,6 +257,13 @@ def login_unificado(request: LoginRequest):
         if not usuario.get('activo', True):
             raise HTTPException(status_code=403, detail="Cuenta desactivada")
         
+        # Verificar que el email esté verificado
+        if not usuario.get('email_verificado', False):
+            raise HTTPException(
+                status_code=403, 
+                detail="Email no verificado. Revisa tu correo."
+            )
+        
         # Retornar usuario con su rol
         return {
             "status": "success",
@@ -200,9 +274,10 @@ def login_unificado(request: LoginRequest):
                 "apellido_paterno": usuario.get('apellido_paterno', ''),
                 "apellido_materno": usuario.get('apellido_materno', ''),
                 "email": usuario['email'],
-                "rol": usuario['rol'],  # 'Admin', 'Empleado', o 'Cliente'
+                "rol": usuario['rol'],
                 "curp": usuario.get('curp'),
-                "telefono": usuario.get('telefono')
+                "telefono": usuario.get('telefono'),
+                "email_verificado": usuario.get('email_verificado', False)
             }
         }
         
@@ -217,6 +292,7 @@ def login_unificado(request: LoginRequest):
 def registrar_cliente(request: RegistroClienteRequest):
     """
     Registra un nuevo cliente en la tabla usuarios con rol='Cliente'
+    Envía email de verificación
     """
     db = conectar()
     cursor = db.cursor()
@@ -233,12 +309,16 @@ def registrar_cliente(request: RegistroClienteRequest):
             if cursor.fetchone():
                 raise HTTPException(status_code=400, detail="El CURP ya está registrado")
         
+        # Generar código de verificación
+        codigo_verificacion = str(random.randint(100000, 999999))
+        
         # Insertar nuevo cliente en tabla usuarios
         query = """
         INSERT INTO usuarios 
         (nombre, apellido_paterno, apellido_materno, email, password, rol, 
-         curp, telefono, direccion, no_identificacion, activo)
-        VALUES (%s, %s, %s, %s, %s, 'Cliente', %s, %s, %s, %s, TRUE)
+         curp, telefono, direccion, no_identificacion, activo, 
+         email_verificado, codigo_verificacion, fecha_codigo_verificacion)
+        VALUES (%s, %s, %s, %s, %s, 'Cliente', %s, %s, %s, %s, TRUE, FALSE, %s, NOW())
         """
         
         cursor.execute(query, (
@@ -250,21 +330,26 @@ def registrar_cliente(request: RegistroClienteRequest):
             request.curp,
             request.telefono,
             request.direccion,
-            request.no_identificacion
+            request.no_identificacion,
+            codigo_verificacion
         ))
         
         db.commit()
         id_cliente = cursor.lastrowid
         
-        # Enviar email de bienvenida
+        # Enviar email de verificación
         try:
-            email_bienvenida(request.email, request.nombre)
+            email_verificacion_cuenta(request.email, codigo_verificacion, request.nombre)
         except Exception as e:
-            print(f"⚠️  Cliente registrado pero email no enviado: {e}")
+            # Si falla el email, eliminar el usuario creado
+            cursor.execute("DELETE FROM usuarios WHERE id_usuario = %s", (id_cliente,))
+            db.commit()
+            raise HTTPException(status_code=500, detail=f"No se pudo enviar email de verificación: {str(e)}")
         
         return {
             "status": "success",
-            "message": "Cliente registrado exitosamente",
+            "message": "Registro exitoso. Revisa tu email para verificar tu cuenta.",
+            "requiere_verificacion": True,
             "id_cliente": id_cliente
         }
         
@@ -272,6 +357,115 @@ def registrar_cliente(request: RegistroClienteRequest):
         raise
     except Exception as e:
         db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        db.close()
+
+@app.post("/verificar_email")
+def verificar_email(request: VerificarEmailRequest):
+    """
+    Verifica el email con el código de 6 dígitos
+    """
+    db = conectar()
+    cursor = db.cursor(dictionary=True)
+    
+    try:
+        # Buscar usuario
+        cursor.execute("""
+            SELECT id_usuario, codigo_verificacion, fecha_codigo_verificacion, email_verificado
+            FROM usuarios
+            WHERE email = %s
+        """, (request.email,))
+        
+        usuario = cursor.fetchone()
+        
+        if not usuario:
+            raise HTTPException(status_code=404, detail="Usuario no encontrado")
+        
+        if usuario['email_verificado']:
+            return {
+                "status": "success",
+                "message": "El email ya estaba verificado"
+            }
+        
+        # Verificar código
+        if usuario['codigo_verificacion'] != request.codigo:
+            raise HTTPException(status_code=401, detail="Código incorrecto")
+        
+        # Verificar que no haya expirado (15 minutos)
+        if usuario['fecha_codigo_verificacion']:
+            tiempo = datetime.now() - usuario['fecha_codigo_verificacion']
+            if tiempo.total_seconds() > 900:
+                raise HTTPException(status_code=410, detail="Código expirado. Solicita uno nuevo.")
+        
+        # Marcar como verificado
+        cursor.execute("""
+            UPDATE usuarios
+            SET email_verificado = TRUE,
+                codigo_verificacion = NULL,
+                fecha_codigo_verificacion = NULL
+            WHERE email = %s
+        """, (request.email,))
+        
+        db.commit()
+        
+        return {
+            "status": "success",
+            "message": "Email verificado correctamente. Ya puedes iniciar sesión."
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        db.close()
+
+@app.post("/reenviar_codigo_verificacion")
+def reenviar_codigo(email: str = Query(...)):
+    """Reenvía código de verificación si expiró"""
+    db = conectar()
+    cursor = db.cursor(dictionary=True)
+    
+    try:
+        cursor.execute("""
+            SELECT id_usuario, nombre, email_verificado
+            FROM usuarios
+            WHERE email = %s
+        """, (email,))
+        
+        usuario = cursor.fetchone()
+        
+        if not usuario:
+            raise HTTPException(status_code=404, detail="Usuario no encontrado")
+        
+        if usuario['email_verificado']:
+            raise HTTPException(status_code=400, detail="El email ya está verificado")
+        
+        # Generar nuevo código
+        codigo = str(random.randint(100000, 999999))
+        
+        # Actualizar código
+        cursor.execute("""
+            UPDATE usuarios
+            SET codigo_verificacion = %s,
+                fecha_codigo_verificacion = NOW()
+            WHERE email = %s
+        """, (codigo, email))
+        
+        db.commit()
+        
+        # Enviar email
+        email_verificacion_cuenta(email, codigo, usuario['nombre'])
+        
+        return {
+            "status": "success",
+            "message": "Nuevo código enviado a tu email"
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
     finally:
         db.close()
@@ -323,7 +517,6 @@ def solicitar_codigo_recuperacion(email: str = Query(...)):
         return {
             "status": "success",
             "message": f"Código enviado a {email}"
-            # NO incluir codigo_debug en producción
         }
         
     except HTTPException:
@@ -395,10 +588,7 @@ def verificar_codigo(request: RecuperacionRequest):
 
 @app.get("/usuarios")
 def obtener_usuarios(rol: Optional[str] = None):
-    """
-    Obtiene lista de usuarios
-    Si se especifica rol, filtra por ese rol
-    """
+    """Obtiene lista de usuarios, opcionalmente filtrados por rol"""
     db = conectar()
     cursor = db.cursor(dictionary=True)
     
@@ -406,7 +596,7 @@ def obtener_usuarios(rol: Optional[str] = None):
         if rol:
             cursor.execute("""
                 SELECT id_usuario, nombre, apellido_paterno, apellido_materno, 
-                       email, rol, activo, fecha_registro
+                       email, rol, activo, email_verificado, fecha_registro
                 FROM usuarios
                 WHERE rol = %s
                 ORDER BY fecha_registro DESC
@@ -414,7 +604,7 @@ def obtener_usuarios(rol: Optional[str] = None):
         else:
             cursor.execute("""
                 SELECT id_usuario, nombre, apellido_paterno, apellido_materno, 
-                       email, rol, activo, fecha_registro
+                       email, rol, activo, email_verificado, fecha_registro
                 FROM usuarios
                 ORDER BY fecha_registro DESC
             """)
@@ -432,25 +622,9 @@ def obtener_usuarios(rol: Optional[str] = None):
     finally:
         db.close()
 
-@app.get("/empleados")
-def obtener_empleados():
-    """
-    Obtiene solo empleados y administradores
-    """
-    return obtener_usuarios(rol="Empleado")
-
-@app.get("/clientes")
-def obtener_clientes():
-    """
-    Obtiene solo clientes
-    """
-    return obtener_usuarios(rol="Cliente")
-
 @app.get("/usuario/{id_usuario}")
 def obtener_usuario(id_usuario: int):
-    """
-    Obtiene datos de un usuario específico
-    """
+    """Obtiene datos de un usuario específico"""
     db = conectar()
     cursor = db.cursor(dictionary=True)
     
@@ -458,7 +632,7 @@ def obtener_usuario(id_usuario: int):
         cursor.execute("""
             SELECT id_usuario, nombre, apellido_paterno, apellido_materno,
                    email, rol, curp, telefono, direccion, no_identificacion,
-                   activo, fecha_registro
+                   activo, email_verificado, fecha_registro
             FROM usuarios
             WHERE id_usuario = %s
         """, (id_usuario,))
@@ -479,153 +653,6 @@ def obtener_usuario(id_usuario: int):
         raise HTTPException(status_code=500, detail=str(e))
     finally:
         db.close()
-
-# ==================== ENDPOINTS DE ADMINISTRACIÓN ====================
-
-@app.post("/admin/crear_empleado")
-def crear_empleado(request: dict):
-    """
-    Crea un nuevo empleado o administrador
-    """
-    db = conectar()
-    cursor = db.cursor()
-    
-    try:
-        # Verificar que el rol sea válido
-        rol = request.get('rol', 'Empleado')
-        if rol not in ['Admin', 'Empleado']:
-            raise HTTPException(status_code=400, detail="Rol inválido para empleado")
-        
-        # Verificar email único
-        cursor.execute("SELECT id_usuario FROM usuarios WHERE email = %s", (request['email'],))
-        if cursor.fetchone():
-            raise HTTPException(status_code=400, detail="El email ya está registrado")
-        
-        # Insertar empleado
-        query = """
-        INSERT INTO usuarios 
-        (nombre, apellido_paterno, apellido_materno, email, password, rol, activo)
-        VALUES (%s, %s, %s, %s, %s, %s, TRUE)
-        """
-        
-        cursor.execute(query, (
-            request['nombre'],
-            request.get('apellido_paterno', ''),
-            request.get('apellido_materno', ''),
-            request['email'],
-            request['password'],
-            rol
-        ))
-        
-        db.commit()
-        
-        return {
-            "status": "success",
-            "message": f"{rol} creado exitosamente",
-            "id_usuario": cursor.lastrowid
-        }
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        db.rollback()
-        raise HTTPException(status_code=500, detail=str(e))
-    finally:
-        db.close()
-
-@app.put("/usuario/{id_usuario}")
-def actualizar_usuario(id_usuario: int, request: dict):
-    """
-    Actualiza datos de un usuario
-    """
-    db = conectar()
-    cursor = db.cursor()
-    
-    try:
-        # Construir query dinámicamente según campos proporcionados
-        campos_actualizar = []
-        valores = []
-        
-        campos_permitidos = ['nombre', 'apellido_paterno', 'apellido_materno', 
-                            'email', 'telefono', 'direccion', 'curp']
-        
-        for campo in campos_permitidos:
-            if campo in request:
-                campos_actualizar.append(f"{campo} = %s")
-                valores.append(request[campo])
-        
-        if not campos_actualizar:
-            raise HTTPException(status_code=400, detail="No hay campos para actualizar")
-        
-        valores.append(id_usuario)
-        
-        query = f"UPDATE usuarios SET {', '.join(campos_actualizar)} WHERE id_usuario = %s"
-        cursor.execute(query, valores)
-        db.commit()
-        
-        if cursor.rowcount == 0:
-            raise HTTPException(status_code=404, detail="Usuario no encontrado")
-        
-        return {
-            "status": "success",
-            "message": "Usuario actualizado correctamente"
-        }
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        db.rollback()
-        raise HTTPException(status_code=500, detail=str(e))
-    finally:
-        db.close()
-
-@app.delete("/usuario/{id_usuario}")
-def desactivar_usuario(id_usuario: int):
-    """
-    Desactiva un usuario (no lo elimina)
-    """
-    db = conectar()
-    cursor = db.cursor()
-    
-    try:
-        cursor.execute("""
-            UPDATE usuarios 
-            SET activo = FALSE 
-            WHERE id_usuario = %s
-        """, (id_usuario,))
-        
-        db.commit()
-        
-        if cursor.rowcount == 0:
-            raise HTTPException(status_code=404, detail="Usuario no encontrado")
-        
-        return {
-            "status": "success",
-            "message": "Usuario desactivado correctamente"
-        }
-        
-    except Exception as e:
-        db.rollback()
-        raise HTTPException(status_code=500, detail=str(e))
-    finally:
-        db.close()
-
-# ==================== ENDPOINT RAÍZ ====================
-
-@app.get("/")
-def root():
-    return {
-        "app": "Monte SIN Piedad API",
-        "version": "2.0",
-        "features": [
-            "Login unificado",
-            "Tabla usuarios única",
-            "Emails con Resend (HTTPS)",
-            "Recuperación de contraseña",
-            "CRUD completo de usuarios"
-        ],
-        "status": "✅ Operativo"
-    }
 
 if __name__ == "__main__":
     import uvicorn

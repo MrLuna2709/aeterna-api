@@ -484,6 +484,246 @@ def obtener_usuario(id_usuario: int):
         cursor.close()
         db.close()
 
+# ==================== ENDPOINTS CLIENTE (APP ANDROID) ====================
+
+class SolicitudCreditoRequest(BaseModel):
+    id_cliente: int
+    monto: float
+    plazo_meses: int
+
+class ActualizarPerfilRequest(BaseModel):
+    nombre: Optional[str] = None
+    apellido_paterno: Optional[str] = None
+    apellido_materno: Optional[str] = None
+    telefono: Optional[str] = None
+    direccion: Optional[str] = None
+
+@app.get("/cliente/{id_cliente}/prestamos")
+def obtener_prestamos_cliente(id_cliente: int):
+    """Devuelve todos los préstamos del cliente con su estado."""
+    db = conectar()
+    cursor = db.cursor(dictionary=True)
+    try:
+        cursor.execute("""
+            SELECT 
+                p.id_prestamo,
+                CONCAT('MSP-', p.id_prestamo) AS folio,
+                p.monto_total,
+                p.saldo_pendiente,
+                p.tasa_interes,
+                p.plazo_meses,
+                p.estado,
+                p.fecha_creacion,
+                p.fecha_aprobacion,
+                (SELECT COUNT(*) FROM pagos g WHERE g.id_prestamo = p.id_prestamo AND g.estado = 'pagado') AS pagos_realizados,
+                (SELECT COUNT(*) FROM pagos g WHERE g.id_prestamo = p.id_prestamo) AS total_pagos
+            FROM prestamos p
+            WHERE p.id_cliente = %s
+            ORDER BY p.fecha_creacion DESC
+        """, (id_cliente,))
+
+        prestamos = cursor.fetchall()
+
+        # Serializar fechas
+        for p in prestamos:
+            for campo in ['fecha_creacion', 'fecha_aprobacion']:
+                if p.get(campo) and hasattr(p[campo], 'isoformat'):
+                    p[campo] = p[campo].isoformat()
+            p['monto_total']      = float(p['monto_total'] or 0)
+            p['saldo_pendiente']  = float(p['saldo_pendiente'] or 0)
+            p['tasa_interes']     = float(p['tasa_interes'] or 0)
+
+        return {
+            "status": "success",
+            "total": len(prestamos),
+            "prestamos": prestamos
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        cursor.close()
+        db.close()
+
+
+@app.get("/cliente/{id_cliente}/prestamos/{id_prestamo}/pagos")
+def obtener_calendario_pagos(id_cliente: int, id_prestamo: int):
+    """Devuelve el calendario de pagos de un préstamo del cliente."""
+    db = conectar()
+    cursor = db.cursor(dictionary=True)
+    try:
+        # Verificar que el préstamo pertenece al cliente
+        cursor.execute("""
+            SELECT id_prestamo FROM prestamos
+            WHERE id_prestamo = %s AND id_cliente = %s
+        """, (id_prestamo, id_cliente))
+
+        if not cursor.fetchone():
+            raise HTTPException(status_code=404, detail="Préstamo no encontrado")
+
+        cursor.execute("""
+            SELECT id_pago, numero_pago, fecha_vencimiento, monto, estado, fecha_pago
+            FROM pagos
+            WHERE id_prestamo = %s
+            ORDER BY numero_pago
+        """, (id_prestamo,))
+
+        pagos = cursor.fetchall()
+
+        for p in pagos:
+            for campo in ['fecha_vencimiento', 'fecha_pago']:
+                if p.get(campo) and hasattr(p[campo], 'isoformat'):
+                    p[campo] = p[campo].isoformat()
+            p['monto'] = float(p['monto'] or 0)
+
+        return {
+            "status": "success",
+            "id_prestamo": id_prestamo,
+            "total_pagos": len(pagos),
+            "pagos": pagos
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        cursor.close()
+        db.close()
+
+
+@app.post("/cliente/solicitar_credito")
+def solicitar_credito(request: SolicitudCreditoRequest):
+    """El cliente solicita un nuevo crédito. Queda en estado PENDIENTE."""
+    TASA_MENSUAL = 0.05
+
+    if request.monto < 1000 or request.monto > 50000:
+        raise HTTPException(status_code=400, detail="El monto debe estar entre $1,000 y $50,000")
+    if request.plazo_meses not in [6, 12, 24, 36, 48]:
+        raise HTTPException(status_code=400, detail="Plazo inválido. Opciones: 6, 12, 24, 36, 48 meses")
+
+    db = conectar()
+    cursor = db.cursor(dictionary=True)
+    try:
+        # Verificar que el cliente existe y es Cliente
+        cursor.execute("SELECT id_usuario, rol FROM usuarios WHERE id_usuario = %s", (request.id_cliente,))
+        usuario = cursor.fetchone()
+        if not usuario:
+            raise HTTPException(status_code=404, detail="Cliente no encontrado")
+        if usuario['rol'] != 'Cliente':
+            raise HTTPException(status_code=403, detail="Solo los clientes pueden solicitar créditos")
+
+        # Verificar que no tenga otro crédito PENDIENTE activo
+        cursor.execute("""
+            SELECT id_prestamo FROM prestamos
+            WHERE id_cliente = %s AND estado = 'PENDIENTE'
+        """, (request.id_cliente,))
+        if cursor.fetchone():
+            raise HTTPException(status_code=400, detail="Ya tienes una solicitud pendiente de revisión")
+
+        # Calcular cuota mensual (amortización francesa)
+        tasa  = TASA_MENSUAL
+        plazo = request.plazo_meses
+        cuota = request.monto * (tasa * (1 + tasa)**plazo) / ((1 + tasa)**plazo - 1)
+        saldo_total = round(cuota * plazo, 2)
+
+        cursor.execute("""
+            INSERT INTO prestamos
+                (id_cliente, monto_total, saldo_pendiente, tasa_interes, plazo_meses, estado, fecha_creacion)
+            VALUES (%s, %s, %s, %s, %s, 'PENDIENTE', NOW())
+        """, (request.id_cliente, request.monto, saldo_total, tasa, plazo))
+
+        db.commit()
+        id_prestamo = cursor.lastrowid
+
+        return {
+            "status": "success",
+            "message": "Solicitud enviada. Un empleado la revisará pronto.",
+            "id_prestamo": id_prestamo,
+            "cuota_mensual": round(cuota, 2),
+            "plazo_meses": plazo,
+            "monto": request.monto
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        cursor.close()
+        db.close()
+
+
+@app.get("/cliente/{id_cliente}/perfil")
+def obtener_perfil(id_cliente: int):
+    """Devuelve el perfil completo del cliente."""
+    db = conectar()
+    cursor = db.cursor(dictionary=True)
+    try:
+        cursor.execute("""
+            SELECT id_usuario, nombre, apellido_paterno, apellido_materno,
+                   email, telefono, curp, direccion, no_identificacion,
+                   fecha_registro, email_verificado
+            FROM usuarios
+            WHERE id_usuario = %s AND rol = 'Cliente'
+        """, (id_cliente,))
+
+        usuario = cursor.fetchone()
+        if not usuario:
+            raise HTTPException(status_code=404, detail="Cliente no encontrado")
+
+        usuario['email_verificado'] = bool(usuario.get('email_verificado', False))
+        if usuario.get('fecha_registro') and hasattr(usuario['fecha_registro'], 'isoformat'):
+            usuario['fecha_registro'] = usuario['fecha_registro'].isoformat()
+
+        return {"status": "success", "perfil": usuario}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        cursor.close()
+        db.close()
+
+
+@app.put("/cliente/{id_cliente}/perfil")
+def actualizar_perfil(id_cliente: int, request: ActualizarPerfilRequest):
+    """Actualiza los datos del perfil del cliente."""
+    db = conectar()
+    cursor = db.cursor(dictionary=True)
+    try:
+        # Solo actualizar campos que vienen en el request
+        campos = {}
+        if request.nombre           is not None: campos['nombre']           = request.nombre
+        if request.apellido_paterno is not None: campos['apellido_paterno'] = request.apellido_paterno
+        if request.apellido_materno is not None: campos['apellido_materno'] = request.apellido_materno
+        if request.telefono         is not None: campos['telefono']         = request.telefono
+        if request.direccion        is not None: campos['direccion']        = request.direccion
+
+        if not campos:
+            raise HTTPException(status_code=400, detail="No hay campos para actualizar")
+
+        set_clause = ", ".join(f"{k} = %s" for k in campos)
+        valores    = list(campos.values()) + [id_cliente]
+
+        cursor.execute(
+            f"UPDATE usuarios SET {set_clause} WHERE id_usuario = %s AND rol = 'Cliente'",
+            valores
+        )
+        db.commit()
+
+        if cursor.rowcount == 0:
+            raise HTTPException(status_code=404, detail="Cliente no encontrado")
+
+        return {"status": "success", "message": "Perfil actualizado correctamente"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        cursor.close()
+        db.close()
+
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)

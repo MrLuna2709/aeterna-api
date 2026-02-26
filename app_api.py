@@ -516,6 +516,7 @@ class ConfiguracionRequest(BaseModel):
 
 # 5. SOLICITAR PRÉSTAMO
 @app.post("/cliente/prestamo")
+@app.post("/cliente/solicitar_credito")
 def solicitar_prestamo(request: PrestamoRequest):
     TASA = 0.05
     if request.monto < 1000 or request.monto > 50000:
@@ -558,7 +559,13 @@ def solicitar_prestamo(request: PrestamoRequest):
 
 # 6. MIS PRÉSTAMOS
 @app.get("/cliente/mis_prestamos")
-def obtener_mis_prestamos(id_cliente: int = Query(...)):
+@app.get("/cliente/{id_cliente_path}/prestamos")
+def obtener_mis_prestamos(id_cliente: Optional[int] = Query(None), id_cliente_path: Optional[int] = None):
+    if id_cliente is None and id_cliente_path is not None:
+        id_cliente = id_cliente_path
+    if id_cliente is None:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=400, detail="Se requiere id_cliente")
     db = conectar()
     cursor = db.cursor(dictionary=True)
     try:
@@ -653,7 +660,8 @@ def obtener_cartera(id_cliente: int = Query(...)):
 
 # 8. CALENDARIO DE PAGOS
 @app.get("/cliente/pagos/{id_prestamo}")
-def obtener_pagos(id_prestamo: int):
+@app.get("/cliente/{id_cliente_path}/prestamos/{id_prestamo}/pagos")
+def obtener_pagos(id_prestamo: int, id_cliente_path: Optional[int] = None):
     db = conectar()
     cursor = db.cursor(dictionary=True)
     try:

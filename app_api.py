@@ -748,8 +748,7 @@ def obtener_prestamos_pendientes():
 # 12. APROBAR / RECHAZAR PRÉSTAMO
 @app.post("/admin/aprobar_prestamo")
 def procesar_prestamo(request: AprobarPrestamoRequest):
-    from dateutil.relativedelta import relativedelta
-    from datetime import date
+    from datetime import date, timedelta
 
     if request.accion not in ["aprobar", "rechazar"]:
         raise HTTPException(status_code=400, detail="Acción inválida. Usa 'aprobar' o 'rechazar'")
@@ -778,7 +777,7 @@ def procesar_prestamo(request: AprobarPrestamoRequest):
             """, (saldo, request.id_empleado, request.id_prestamo))
 
             for i in range(1, plazo + 1):
-                fecha_venc = hoy + relativedelta(months=i)
+                fecha_venc = hoy + timedelta(days=30 * i)
                 cursor.execute("""
                     INSERT INTO pagos (id_prestamo, numero_pago, fecha_vencimiento, monto, estado)
                     VALUES (%s, %s, %s, %s, 'pendiente')
@@ -897,10 +896,17 @@ def registrar_pago(request: RegistrarPagoRequest):
         if row and float(row['saldo_pendiente']) == 0:
             cursor.execute("UPDATE prestamos SET estado='LIQUIDADO' WHERE id_prestamo=%s", (id_prestamo,))
 
-        # Guardar en tickets_pagos
+        # Guardar en tickets_pagos con columnas reales
+        import hashlib, time
+        folio = f"T-{request.id_pago}-{int(time.time())}"
+        firma = hashlib.sha256(f"{request.id_pago}{monto}{time.time()}".encode()).hexdigest()[:64]
+        liquidado = float(row['saldo_pendiente']) == 0 if row else False
         cursor.execute("""
-            INSERT INTO tickets_pagos (id_prestamo, monto, fecha_pago) VALUES (%s, %s, NOW())
-        """, (id_prestamo, monto))
+            INSERT INTO tickets_pagos 
+                (folio, id_pago, id_empleado, metodo_pago, monto_pagado, fecha_generacion, firma_digital, estado, tipo)
+            VALUES (%s, %s, %s, 'EFECTIVO', %s, NOW(), %s, 'ACTIVO', %s)
+        """, (folio, request.id_pago, request.id_empleado, monto, firma,
+              'LIQUIDACION' if liquidado else 'PAGO'))
 
         db.commit()
         return {
@@ -959,27 +965,29 @@ def obtener_corte_caja(id_empleado: int = Query(...), fecha: Optional[str] = Que
 
         cursor.execute("""
             SELECT COUNT(*) AS total_pagos,
-                   COALESCE(SUM(monto), 0) AS total_cobrado
+                   COALESCE(SUM(monto_pagado), 0) AS total_cobrado
             FROM tickets_pagos
-            WHERE DATE(fecha_pago) = %s
+            WHERE DATE(fecha_generacion) = %s AND estado = 'ACTIVO'
         """, (fecha_filtro,))
         corte = cursor.fetchone()
 
         cursor.execute("""
-            SELECT t.id_ticket, t.monto, t.fecha_pago,
-                   CONCAT('MSP-', t.id_prestamo) AS folio,
+            SELECT t.id_ticket, t.folio, t.monto_pagado, t.fecha_generacion,
+                   t.metodo_pago, t.tipo,
+                   CONCAT('MSP-', p.id_prestamo) AS folio_prestamo,
                    u.nombre, u.apellido_paterno
             FROM tickets_pagos t
-            JOIN prestamos p ON t.id_prestamo = p.id_prestamo
+            JOIN pagos g ON t.id_pago = g.id_pago
+            JOIN prestamos p ON g.id_prestamo = p.id_prestamo
             JOIN usuarios u ON p.id_cliente = u.id_usuario
-            WHERE DATE(t.fecha_pago) = %s
-            ORDER BY t.fecha_pago DESC
+            WHERE DATE(t.fecha_generacion) = %s AND t.estado = 'ACTIVO'
+            ORDER BY t.fecha_generacion DESC
         """, (fecha_filtro,))
         movimientos = cursor.fetchall()
         for m in movimientos:
-            if m.get('fecha_pago') and hasattr(m['fecha_pago'], 'isoformat'):
-                m['fecha_pago'] = m['fecha_pago'].isoformat()
-            m['monto'] = float(m['monto'] or 0)
+            if m.get('fecha_generacion') and hasattr(m['fecha_generacion'], 'isoformat'):
+                m['fecha_generacion'] = m['fecha_generacion'].isoformat()
+            m['monto_pagado'] = float(m['monto_pagado'] or 0)
 
         return {
             "status":        "success",

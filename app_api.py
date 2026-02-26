@@ -484,163 +484,430 @@ def obtener_usuario(id_usuario: int):
         cursor.close()
         db.close()
 
-# ==================== ENDPOINTS CLIENTE (APP ANDROID) ====================
 
-class SolicitudCreditoRequest(BaseModel):
+# ==================== MODELOS ADICIONALES ====================
+
+class PrestamoRequest(BaseModel):
     id_cliente: int
     monto: float
     plazo_meses: int
 
-class ActualizarPerfilRequest(BaseModel):
-    nombre: Optional[str] = None
-    apellido_paterno: Optional[str] = None
+class AprobarPrestamoRequest(BaseModel):
+    id_prestamo: int
+    accion: str  # "aprobar" o "rechazar"
+    id_empleado: Optional[int] = None
+
+class CrearEmpleadoRequest(BaseModel):
+    nombre: str
+    apellido_paterno: str
     apellido_materno: Optional[str] = None
+    email: str
+    password: str
     telefono: Optional[str] = None
-    direccion: Optional[str] = None
 
-@app.get("/cliente/{id_cliente}/prestamos")
-def obtener_prestamos_cliente(id_cliente: int):
-    """Devuelve todos los préstamos del cliente con su estado."""
-    db = conectar()
-    cursor = db.cursor(dictionary=True)
-    try:
-        cursor.execute("""
-            SELECT 
-                p.id_prestamo,
-                CONCAT('MSP-', p.id_prestamo) AS folio,
-                p.monto_total,
-                p.saldo_pendiente,
-                p.tasa_interes,
-                p.plazo_meses,
-                p.estado,
-                p.fecha_creacion,
-                p.fecha_aprobacion,
-                (SELECT COUNT(*) FROM pagos g WHERE g.id_prestamo = p.id_prestamo AND g.estado = 'pagado') AS pagos_realizados,
-                (SELECT COUNT(*) FROM pagos g WHERE g.id_prestamo = p.id_prestamo) AS total_pagos
-            FROM prestamos p
-            WHERE p.id_cliente = %s
-            ORDER BY p.fecha_creacion DESC
-        """, (id_cliente,))
+class RegistrarPagoRequest(BaseModel):
+    id_pago: int
+    id_empleado: int
 
-        prestamos = cursor.fetchall()
+class ConfiguracionRequest(BaseModel):
+    valor: str
 
-        # Serializar fechas
-        for p in prestamos:
-            for campo in ['fecha_creacion', 'fecha_aprobacion']:
-                if p.get(campo) and hasattr(p[campo], 'isoformat'):
-                    p[campo] = p[campo].isoformat()
-            p['monto_total']      = float(p['monto_total'] or 0)
-            p['saldo_pendiente']  = float(p['saldo_pendiente'] or 0)
-            p['tasa_interes']     = float(p['tasa_interes'] or 0)
+# ==================== ENDPOINTS CLIENTE ====================
 
-        return {
-            "status": "success",
-            "total": len(prestamos),
-            "prestamos": prestamos
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-    finally:
-        cursor.close()
-        db.close()
-
-
-@app.get("/cliente/{id_cliente}/prestamos/{id_prestamo}/pagos")
-def obtener_calendario_pagos(id_cliente: int, id_prestamo: int):
-    """Devuelve el calendario de pagos de un préstamo del cliente."""
-    db = conectar()
-    cursor = db.cursor(dictionary=True)
-    try:
-        # Verificar que el préstamo pertenece al cliente
-        cursor.execute("""
-            SELECT id_prestamo FROM prestamos
-            WHERE id_prestamo = %s AND id_cliente = %s
-        """, (id_prestamo, id_cliente))
-
-        if not cursor.fetchone():
-            raise HTTPException(status_code=404, detail="Préstamo no encontrado")
-
-        cursor.execute("""
-            SELECT id_pago, numero_pago, fecha_vencimiento, monto, estado, fecha_pago
-            FROM pagos
-            WHERE id_prestamo = %s
-            ORDER BY numero_pago
-        """, (id_prestamo,))
-
-        pagos = cursor.fetchall()
-
-        for p in pagos:
-            for campo in ['fecha_vencimiento', 'fecha_pago']:
-                if p.get(campo) and hasattr(p[campo], 'isoformat'):
-                    p[campo] = p[campo].isoformat()
-            p['monto'] = float(p['monto'] or 0)
-
-        return {
-            "status": "success",
-            "id_prestamo": id_prestamo,
-            "total_pagos": len(pagos),
-            "pagos": pagos
-        }
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-    finally:
-        cursor.close()
-        db.close()
-
-
-@app.post("/cliente/solicitar_credito")
-def solicitar_credito(request: SolicitudCreditoRequest):
-    """El cliente solicita un nuevo crédito. Queda en estado PENDIENTE."""
-    TASA_MENSUAL = 0.05
-
+# 5. SOLICITAR PRÉSTAMO
+@app.post("/cliente/prestamo")
+def solicitar_prestamo(request: PrestamoRequest):
+    TASA = 0.05
     if request.monto < 1000 or request.monto > 50000:
-        raise HTTPException(status_code=400, detail="El monto debe estar entre $1,000 y $50,000")
+        raise HTTPException(status_code=400, detail="Monto debe estar entre $1,000 y $50,000")
     if request.plazo_meses not in [6, 12, 24, 36, 48]:
         raise HTTPException(status_code=400, detail="Plazo inválido. Opciones: 6, 12, 24, 36, 48 meses")
 
     db = conectar()
     cursor = db.cursor(dictionary=True)
     try:
-        # Verificar que el cliente existe y es Cliente
         cursor.execute("SELECT id_usuario, rol FROM usuarios WHERE id_usuario = %s", (request.id_cliente,))
-        usuario = cursor.fetchone()
-        if not usuario:
+        u = cursor.fetchone()
+        if not u:
             raise HTTPException(status_code=404, detail="Cliente no encontrado")
-        if usuario['rol'] != 'Cliente':
-            raise HTTPException(status_code=403, detail="Solo los clientes pueden solicitar créditos")
 
-        # Verificar que no tenga otro crédito PENDIENTE activo
-        cursor.execute("""
-            SELECT id_prestamo FROM prestamos
-            WHERE id_cliente = %s AND estado = 'PENDIENTE'
-        """, (request.id_cliente,))
+        cursor.execute("SELECT id_prestamo FROM prestamos WHERE id_cliente = %s AND estado = 'PENDIENTE'", (request.id_cliente,))
         if cursor.fetchone():
-            raise HTTPException(status_code=400, detail="Ya tienes una solicitud pendiente de revisión")
+            raise HTTPException(status_code=400, detail="Ya tienes una solicitud pendiente")
 
-        # Calcular cuota mensual (amortización francesa)
-        tasa  = TASA_MENSUAL
         plazo = request.plazo_meses
-        cuota = request.monto * (tasa * (1 + tasa)**plazo) / ((1 + tasa)**plazo - 1)
-        saldo_total = round(cuota * plazo, 2)
+        cuota = request.monto * (TASA * (1 + TASA)**plazo) / ((1 + TASA)**plazo - 1)
+        saldo = round(cuota * plazo, 2)
 
         cursor.execute("""
-            INSERT INTO prestamos
-                (id_cliente, monto_total, saldo_pendiente, tasa_interes, plazo_meses, estado, fecha_creacion)
+            INSERT INTO prestamos (id_cliente, monto_total, saldo_pendiente, tasa_interes, plazo_meses, estado, fecha_creacion)
             VALUES (%s, %s, %s, %s, %s, 'PENDIENTE', NOW())
-        """, (request.id_cliente, request.monto, saldo_total, tasa, plazo))
-
+        """, (request.id_cliente, request.monto, saldo, TASA, plazo))
         db.commit()
-        id_prestamo = cursor.lastrowid
+
+        return {"status": "success", "message": "Solicitud enviada. Un empleado la revisará pronto."}
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        cursor.close()
+        db.close()
+
+
+# 6. MIS PRÉSTAMOS
+@app.get("/cliente/mis_prestamos")
+def obtener_mis_prestamos(id_cliente: int = Query(...)):
+    db = conectar()
+    cursor = db.cursor(dictionary=True)
+    try:
+        cursor.execute("""
+            SELECT p.id_prestamo,
+                   CONCAT('MSP-', p.id_prestamo) AS folio,
+                   p.monto_total, p.saldo_pendiente, p.tasa_interes,
+                   p.plazo_meses, p.estado,
+                   p.fecha_creacion, p.fecha_aprobacion,
+                   (SELECT COUNT(*) FROM pagos g WHERE g.id_prestamo = p.id_prestamo AND g.estado = 'pagado') AS pagos_realizados,
+                   (SELECT COUNT(*) FROM pagos g WHERE g.id_prestamo = p.id_prestamo) AS total_pagos
+            FROM prestamos p
+            WHERE p.id_cliente = %s
+            ORDER BY p.fecha_creacion DESC
+        """, (id_cliente,))
+        prestamos = cursor.fetchall()
+        for p in prestamos:
+            for c in ['fecha_creacion', 'fecha_aprobacion']:
+                if p.get(c) and hasattr(p[c], 'isoformat'):
+                    p[c] = p[c].isoformat()
+            p['monto_total']     = float(p['monto_total'] or 0)
+            p['saldo_pendiente'] = float(p['saldo_pendiente'] or 0)
+            p['tasa_interes']    = float(p['tasa_interes'] or 0)
+        return prestamos
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        cursor.close()
+        db.close()
+
+
+# 7. CARTERA (resumen financiero del cliente)
+@app.get("/cliente/cartera")
+def obtener_cartera(id_cliente: int = Query(...)):
+    db = conectar()
+    cursor = db.cursor(dictionary=True)
+    try:
+        cursor.execute("""
+            SELECT 
+                COALESCE(SUM(monto_total), 0)     AS capital_otorgado,
+                COALESCE(SUM(saldo_pendiente), 0) AS saldo_pendiente,
+                COUNT(*)                           AS total_prestamos,
+                SUM(CASE WHEN estado = 'ACTIVO'    THEN 1 ELSE 0 END) AS activos,
+                SUM(CASE WHEN estado = 'MOROSO'    THEN 1 ELSE 0 END) AS morosos,
+                SUM(CASE WHEN estado = 'LIQUIDADO' THEN 1 ELSE 0 END) AS liquidados,
+                SUM(CASE WHEN estado = 'PENDIENTE' THEN 1 ELSE 0 END) AS pendientes
+            FROM prestamos WHERE id_cliente = %s
+        """, (id_cliente,))
+        row = cursor.fetchone()
+
+        cursor.execute("""
+            SELECT COALESCE(SUM(g.monto), 0) AS total_pagado
+            FROM pagos g
+            JOIN prestamos p ON g.id_prestamo = p.id_prestamo
+            WHERE p.id_cliente = %s AND g.estado = 'pagado'
+        """, (id_cliente,))
+        pagos = cursor.fetchone()
+
+        # Próximo pago
+        cursor.execute("""
+            SELECT g.fecha_vencimiento, g.monto, g.numero_pago,
+                   CONCAT('MSP-', p.id_prestamo) AS folio
+            FROM pagos g
+            JOIN prestamos p ON g.id_prestamo = p.id_prestamo
+            WHERE p.id_cliente = %s AND g.estado = 'pendiente' AND p.estado = 'ACTIVO'
+            ORDER BY g.fecha_vencimiento ASC
+            LIMIT 1
+        """, (id_cliente,))
+        proximo = cursor.fetchone()
+        if proximo and proximo.get('fecha_vencimiento') and hasattr(proximo['fecha_vencimiento'], 'isoformat'):
+            proximo['fecha_vencimiento'] = proximo['fecha_vencimiento'].isoformat()
+            proximo['monto'] = float(proximo['monto'] or 0)
 
         return {
             "status": "success",
-            "message": "Solicitud enviada. Un empleado la revisará pronto.",
-            "id_prestamo": id_prestamo,
-            "cuota_mensual": round(cuota, 2),
-            "plazo_meses": plazo,
-            "monto": request.monto
+            "capital_otorgado":  float(row['capital_otorgado'] or 0),
+            "saldo_pendiente":   float(row['saldo_pendiente'] or 0),
+            "total_pagado":      float(pagos['total_pagado'] or 0),
+            "total_prestamos":   row['total_prestamos'],
+            "activos":           row['activos'],
+            "morosos":           row['morosos'],
+            "liquidados":        row['liquidados'],
+            "pendientes":        row['pendientes'],
+            "proximo_pago":      proximo
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        cursor.close()
+        db.close()
+
+
+# 8. CALENDARIO DE PAGOS
+@app.get("/cliente/pagos/{id_prestamo}")
+def obtener_pagos(id_prestamo: int):
+    db = conectar()
+    cursor = db.cursor(dictionary=True)
+    try:
+        cursor.execute("""
+            SELECT id_pago, numero_pago, fecha_vencimiento, monto, estado, fecha_pago
+            FROM pagos WHERE id_prestamo = %s ORDER BY numero_pago
+        """, (id_prestamo,))
+        pagos = cursor.fetchall()
+        for p in pagos:
+            for c in ['fecha_vencimiento', 'fecha_pago']:
+                if p.get(c) and hasattr(p[c], 'isoformat'):
+                    p[c] = p[c].isoformat()
+            p['monto'] = float(p['monto'] or 0)
+        return pagos
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        cursor.close()
+        db.close()
+
+
+# 9. CONFIGURACIÓN (GET)
+@app.get("/configuracion_sistema")
+def obtener_configuracion():
+    db = conectar()
+    cursor = db.cursor(dictionary=True)
+    try:
+        cursor.execute("SELECT * FROM configuracion_sistema")
+        config = cursor.fetchall()
+        return {"status": "success", "configuracion": config}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        cursor.close()
+        db.close()
+
+
+# 10. CONFIGURACIÓN (PUT)
+@app.put("/configuracion_sistema/{id_config}")
+def actualizar_configuracion(id_config: int, request: ConfiguracionRequest):
+    db = conectar()
+    cursor = db.cursor()
+    try:
+        cursor.execute("UPDATE configuracion_sistema SET valor = %s WHERE id_config = %s", (request.valor, id_config))
+        db.commit()
+        if cursor.rowcount == 0:
+            raise HTTPException(status_code=404, detail="Configuración no encontrada")
+        return {"status": "success", "message": "Configuración actualizada"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        cursor.close()
+        db.close()
+
+
+# ==================== ENDPOINTS ADMIN ====================
+
+# 11. PRÉSTAMOS PENDIENTES
+@app.get("/admin/prestamos_pendientes")
+def obtener_prestamos_pendientes():
+    db = conectar()
+    cursor = db.cursor(dictionary=True)
+    try:
+        cursor.execute("""
+            SELECT p.id_prestamo, CONCAT('MSP-', p.id_prestamo) AS folio,
+                   p.monto_total, p.saldo_pendiente, p.tasa_interes, p.plazo_meses,
+                   p.estado, p.fecha_creacion,
+                   u.nombre, u.apellido_paterno, u.curp, u.telefono, u.email
+            FROM prestamos p
+            JOIN usuarios u ON p.id_cliente = u.id_usuario
+            WHERE p.estado = 'PENDIENTE'
+            ORDER BY p.fecha_creacion ASC
+        """)
+        prestamos = cursor.fetchall()
+        for p in prestamos:
+            if p.get('fecha_creacion') and hasattr(p['fecha_creacion'], 'isoformat'):
+                p['fecha_creacion'] = p['fecha_creacion'].isoformat()
+            p['monto_total']     = float(p['monto_total'] or 0)
+            p['saldo_pendiente'] = float(p['saldo_pendiente'] or 0)
+            p['tasa_interes']    = float(p['tasa_interes'] or 0)
+        return prestamos
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        cursor.close()
+        db.close()
+
+
+# 12. APROBAR / RECHAZAR PRÉSTAMO
+@app.post("/admin/aprobar_prestamo")
+def procesar_prestamo(request: AprobarPrestamoRequest):
+    from dateutil.relativedelta import relativedelta
+    from datetime import date
+
+    if request.accion not in ["aprobar", "rechazar"]:
+        raise HTTPException(status_code=400, detail="Acción inválida. Usa 'aprobar' o 'rechazar'")
+
+    db = conectar()
+    cursor = db.cursor(dictionary=True)
+    try:
+        cursor.execute("SELECT * FROM prestamos WHERE id_prestamo = %s", (request.id_prestamo,))
+        prestamo = cursor.fetchone()
+        if not prestamo:
+            raise HTTPException(status_code=404, detail="Préstamo no encontrado")
+        if prestamo['estado'] != 'PENDIENTE':
+            raise HTTPException(status_code=400, detail="El préstamo no está en estado PENDIENTE")
+
+        if request.accion == "aprobar":
+            capital = float(prestamo['monto_total'])
+            plazo   = int(prestamo['plazo_meses'])
+            tasa    = float(prestamo['tasa_interes'])
+            cuota   = capital * (tasa * (1 + tasa)**plazo) / ((1 + tasa)**plazo - 1)
+            saldo   = round(cuota * plazo, 2)
+            hoy     = date.today()
+
+            cursor.execute("""
+                UPDATE prestamos SET estado='ACTIVO', saldo_pendiente=%s,
+                fecha_aprobacion=NOW(), id_aprobador=%s WHERE id_prestamo=%s
+            """, (saldo, request.id_empleado, request.id_prestamo))
+
+            for i in range(1, plazo + 1):
+                fecha_venc = hoy + relativedelta(months=i)
+                cursor.execute("""
+                    INSERT INTO pagos (id_prestamo, numero_pago, fecha_vencimiento, monto, estado)
+                    VALUES (%s, %s, %s, %s, 'pendiente')
+                """, (request.id_prestamo, i, fecha_venc, round(cuota, 2)))
+
+            db.commit()
+            return {"status": "success", "message": f"Préstamo aprobado. Se generaron {plazo} pagos."}
+        else:
+            cursor.execute("UPDATE prestamos SET estado='RECHAZADO' WHERE id_prestamo=%s", (request.id_prestamo,))
+            db.commit()
+            return {"status": "success", "message": "Préstamo rechazado."}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        cursor.close()
+        db.close()
+
+
+# 13. ESTADÍSTICAS
+@app.get("/admin/estadisticas")
+def obtener_estadisticas():
+    db = conectar()
+    cursor = db.cursor(dictionary=True)
+    try:
+        cursor.execute("SELECT COUNT(*) AS total FROM usuarios WHERE rol = 'Cliente' AND activo = TRUE")
+        clientes = cursor.fetchone()['total']
+
+        cursor.execute("SELECT COALESCE(SUM(monto_total), 0) AS total FROM prestamos WHERE estado = 'ACTIVO'")
+        capital_activo = float(cursor.fetchone()['total'])
+
+        cursor.execute("SELECT COALESCE(SUM(monto_total - saldo_pendiente), 0) AS total FROM prestamos")
+        recuperado = float(cursor.fetchone()['total'])
+
+        cursor.execute("SELECT COUNT(*) AS total FROM prestamos WHERE estado = 'MOROSO'")
+        morosos = cursor.fetchone()['total']
+
+        cursor.execute("SELECT COUNT(*) AS total FROM prestamos WHERE estado = 'PENDIENTE'")
+        pendientes = cursor.fetchone()['total']
+
+        return {
+            "status":         "success",
+            "clientes":       clientes,
+            "capital_activo": capital_activo,
+            "recuperado":     recuperado,
+            "morosos":        morosos,
+            "pendientes":     pendientes
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        cursor.close()
+        db.close()
+
+
+# 14. CREAR EMPLEADO
+@app.post("/admin/crear_empleado")
+def crear_empleado(request: CrearEmpleadoRequest):
+    db = conectar()
+    cursor = db.cursor(dictionary=True)
+    try:
+        cursor.execute("SELECT id_usuario FROM usuarios WHERE email = %s", (request.email,))
+        if cursor.fetchone():
+            raise HTTPException(status_code=400, detail="El email ya está registrado")
+
+        cursor.execute("""
+            INSERT INTO usuarios (nombre, apellido_paterno, apellido_materno, email, password,
+                                  rol, telefono, activo, email_verificado)
+            VALUES (%s, %s, %s, %s, %s, 'Empleado', %s, TRUE, TRUE)
+        """, (request.nombre, request.apellido_paterno, request.apellido_materno,
+              request.email, request.password, request.telefono))
+        db.commit()
+        id_empleado = cursor.lastrowid
+
+        return {"status": "success", "message": "Empleado creado exitosamente", "id_empleado": id_empleado}
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        cursor.close()
+        db.close()
+
+
+# ==================== ENDPOINTS EMPLEADO ====================
+
+# 15. REGISTRAR PAGO
+@app.post("/empleado/registrar_pago")
+def registrar_pago(request: RegistrarPagoRequest):
+    db = conectar()
+    cursor = db.cursor(dictionary=True)
+    try:
+        cursor.execute("SELECT * FROM pagos WHERE id_pago = %s", (request.id_pago,))
+        pago = cursor.fetchone()
+        if not pago:
+            raise HTTPException(status_code=404, detail="Pago no encontrado")
+        if pago['estado'] == 'pagado':
+            raise HTTPException(status_code=400, detail="Este pago ya fue registrado")
+
+        monto       = float(pago['monto'])
+        id_prestamo = pago['id_prestamo']
+
+        cursor.execute("UPDATE pagos SET estado='pagado', fecha_pago=NOW() WHERE id_pago=%s", (request.id_pago,))
+        cursor.execute("""
+            UPDATE prestamos SET saldo_pendiente = GREATEST(0, saldo_pendiente - %s)
+            WHERE id_prestamo = %s
+        """, (monto, id_prestamo))
+
+        # Verificar si se liquidó
+        cursor.execute("SELECT saldo_pendiente FROM prestamos WHERE id_prestamo = %s", (id_prestamo,))
+        row = cursor.fetchone()
+        if row and float(row['saldo_pendiente']) == 0:
+            cursor.execute("UPDATE prestamos SET estado='LIQUIDADO' WHERE id_prestamo=%s", (id_prestamo,))
+
+        # Guardar en tickets_pagos
+        cursor.execute("""
+            INSERT INTO tickets_pagos (id_prestamo, monto, fecha_pago) VALUES (%s, %s, NOW())
+        """, (id_prestamo, monto))
+
+        db.commit()
+        return {
+            "status":      "success",
+            "message":     f"Pago #{pago['numero_pago']} registrado exitosamente",
+            "monto":       monto,
+            "id_prestamo": id_prestamo
         }
     except HTTPException:
         raise
@@ -652,31 +919,29 @@ def solicitar_credito(request: SolicitudCreditoRequest):
         db.close()
 
 
-@app.get("/cliente/{id_cliente}/perfil")
-def obtener_perfil(id_cliente: int):
-    """Devuelve el perfil completo del cliente."""
+# 16. PAGOS PENDIENTES
+@app.get("/empleado/pagos_pendientes")
+def obtener_pagos_pendientes():
     db = conectar()
     cursor = db.cursor(dictionary=True)
     try:
         cursor.execute("""
-            SELECT id_usuario, nombre, apellido_paterno, apellido_materno,
-                   email, telefono, curp, direccion, no_identificacion,
-                   fecha_registro, email_verificado
-            FROM usuarios
-            WHERE id_usuario = %s AND rol = 'Cliente'
-        """, (id_cliente,))
-
-        usuario = cursor.fetchone()
-        if not usuario:
-            raise HTTPException(status_code=404, detail="Cliente no encontrado")
-
-        usuario['email_verificado'] = bool(usuario.get('email_verificado', False))
-        if usuario.get('fecha_registro') and hasattr(usuario['fecha_registro'], 'isoformat'):
-            usuario['fecha_registro'] = usuario['fecha_registro'].isoformat()
-
-        return {"status": "success", "perfil": usuario}
-    except HTTPException:
-        raise
+            SELECT g.id_pago, g.id_prestamo, g.numero_pago,
+                   g.fecha_vencimiento, g.monto, g.estado,
+                   CONCAT('MSP-', p.id_prestamo) AS folio,
+                   u.nombre, u.apellido_paterno, u.telefono
+            FROM pagos g
+            JOIN prestamos p ON g.id_prestamo = p.id_prestamo
+            JOIN usuarios u ON p.id_cliente = u.id_usuario
+            WHERE g.estado = 'pendiente' AND p.estado IN ('ACTIVO', 'MOROSO')
+            ORDER BY g.fecha_vencimiento ASC
+        """)
+        pagos = cursor.fetchall()
+        for p in pagos:
+            if p.get('fecha_vencimiento') and hasattr(p['fecha_vencimiento'], 'isoformat'):
+                p['fecha_vencimiento'] = p['fecha_vencimiento'].isoformat()
+            p['monto'] = float(p['monto'] or 0)
+        return pagos
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
     finally:
@@ -684,40 +949,104 @@ def obtener_perfil(id_cliente: int):
         db.close()
 
 
-@app.put("/cliente/{id_cliente}/perfil")
-def actualizar_perfil(id_cliente: int, request: ActualizarPerfilRequest):
-    """Actualiza los datos del perfil del cliente."""
+# 17. CORTE DE CAJA
+@app.get("/empleado/corte_caja")
+def obtener_corte_caja(id_empleado: int = Query(...), fecha: Optional[str] = Query(None)):
     db = conectar()
     cursor = db.cursor(dictionary=True)
     try:
-        # Solo actualizar campos que vienen en el request
-        campos = {}
-        if request.nombre           is not None: campos['nombre']           = request.nombre
-        if request.apellido_paterno is not None: campos['apellido_paterno'] = request.apellido_paterno
-        if request.apellido_materno is not None: campos['apellido_materno'] = request.apellido_materno
-        if request.telefono         is not None: campos['telefono']         = request.telefono
-        if request.direccion        is not None: campos['direccion']        = request.direccion
+        fecha_filtro = fecha if fecha else datetime.now().strftime("%Y-%m-%d")
 
-        if not campos:
-            raise HTTPException(status_code=400, detail="No hay campos para actualizar")
+        cursor.execute("""
+            SELECT COUNT(*) AS total_pagos,
+                   COALESCE(SUM(monto), 0) AS total_cobrado
+            FROM tickets_pagos
+            WHERE DATE(fecha_pago) = %s
+        """, (fecha_filtro,))
+        corte = cursor.fetchone()
 
-        set_clause = ", ".join(f"{k} = %s" for k in campos)
-        valores    = list(campos.values()) + [id_cliente]
+        cursor.execute("""
+            SELECT t.id_ticket, t.monto, t.fecha_pago,
+                   CONCAT('MSP-', t.id_prestamo) AS folio,
+                   u.nombre, u.apellido_paterno
+            FROM tickets_pagos t
+            JOIN prestamos p ON t.id_prestamo = p.id_prestamo
+            JOIN usuarios u ON p.id_cliente = u.id_usuario
+            WHERE DATE(t.fecha_pago) = %s
+            ORDER BY t.fecha_pago DESC
+        """, (fecha_filtro,))
+        movimientos = cursor.fetchall()
+        for m in movimientos:
+            if m.get('fecha_pago') and hasattr(m['fecha_pago'], 'isoformat'):
+                m['fecha_pago'] = m['fecha_pago'].isoformat()
+            m['monto'] = float(m['monto'] or 0)
 
-        cursor.execute(
-            f"UPDATE usuarios SET {set_clause} WHERE id_usuario = %s AND rol = 'Cliente'",
-            valores
-        )
-        db.commit()
+        return {
+            "status":        "success",
+            "fecha":         fecha_filtro,
+            "total_pagos":   corte['total_pagos'],
+            "total_cobrado": float(corte['total_cobrado'] or 0),
+            "movimientos":   movimientos
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        cursor.close()
+        db.close()
 
-        if cursor.rowcount == 0:
-            raise HTTPException(status_code=404, detail="Cliente no encontrado")
 
-        return {"status": "success", "message": "Perfil actualizado correctamente"}
+# 18. BUSCAR TICKET POR FOLIO
+@app.get("/tickets/{folio}")
+def buscar_ticket(folio: str):
+    db = conectar()
+    cursor = db.cursor(dictionary=True)
+    try:
+        # Extraer id_prestamo del folio (MSP-34 → 34)
+        id_prestamo = int(folio.replace("MSP-", "").strip())
+
+        cursor.execute("""
+            SELECT p.id_prestamo, CONCAT('MSP-', p.id_prestamo) AS folio,
+                   p.monto_total, p.saldo_pendiente, p.tasa_interes,
+                   p.plazo_meses, p.estado, p.fecha_creacion, p.fecha_aprobacion,
+                   u.nombre, u.apellido_paterno, u.apellido_materno,
+                   u.curp, u.telefono, u.email,
+                   (SELECT COUNT(*) FROM pagos g WHERE g.id_prestamo = p.id_prestamo AND g.estado = 'pagado') AS pagos_realizados,
+                   (SELECT COUNT(*) FROM pagos g WHERE g.id_prestamo = p.id_prestamo) AS total_pagos
+            FROM prestamos p
+            JOIN usuarios u ON p.id_cliente = u.id_usuario
+            WHERE p.id_prestamo = %s
+        """, (id_prestamo,))
+
+        prestamo = cursor.fetchone()
+        if not prestamo:
+            raise HTTPException(status_code=404, detail=f"Ticket {folio} no encontrado")
+
+        for c in ['fecha_creacion', 'fecha_aprobacion']:
+            if prestamo.get(c) and hasattr(prestamo[c], 'isoformat'):
+                prestamo[c] = prestamo[c].isoformat()
+        prestamo['monto_total']     = float(prestamo['monto_total'] or 0)
+        prestamo['saldo_pendiente'] = float(prestamo['saldo_pendiente'] or 0)
+        prestamo['tasa_interes']    = float(prestamo['tasa_interes'] or 0)
+
+        # Pagos del ticket
+        cursor.execute("""
+            SELECT id_pago, numero_pago, fecha_vencimiento, monto, estado, fecha_pago
+            FROM pagos WHERE id_prestamo = %s ORDER BY numero_pago
+        """, (id_prestamo,))
+        pagos = cursor.fetchall()
+        for p in pagos:
+            for c in ['fecha_vencimiento', 'fecha_pago']:
+                if p.get(c) and hasattr(p[c], 'isoformat'):
+                    p[c] = p[c].isoformat()
+            p['monto'] = float(p['monto'] or 0)
+
+        prestamo['pagos'] = pagos
+        return {"status": "success", "ticket": prestamo}
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Formato de folio inválido. Usa MSP-{número}")
     except HTTPException:
         raise
     except Exception as e:
-        db.rollback()
         raise HTTPException(status_code=500, detail=str(e))
     finally:
         cursor.close()

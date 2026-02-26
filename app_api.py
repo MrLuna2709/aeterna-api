@@ -13,11 +13,13 @@ from datetime import datetime, timedelta
 import random
 import os
 
-# ==================== RESEND (reemplaza smtplib) ====================
-import resend
+# ==================== GMAIL SMTP ====================
+import smtplib
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
 
-# Configurar API key de Resend desde variable de entorno
-resend.api_key = os.environ.get("RESEND_API_KEY", "")
+GMAIL_USER = os.environ.get("GMAIL_USER", "noreplymonte2@gmail.com")
+GMAIL_PASS = os.environ.get("GMAIL_PASS", "ccmr hnrv zjxc iwbv")
 
 # ==================== CONFIGURACIÓN BD (VARIABLES DE ENTORNO) ====================
 DB_CONFIG = {
@@ -29,7 +31,17 @@ DB_CONFIG = {
 }
 
 # ==================== FASTAPI APP ====================
+from fastapi.middleware.cors import CORSMiddleware
+
 app = FastAPI()
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 def conectar():
     return mysql.connector.connect(**DB_CONFIG)
@@ -63,13 +75,18 @@ class RecuperacionRequest(BaseModel):
 # ==================== FUNCIONES DE EMAIL (RESEND) ====================
 
 def enviar_email_resend(destinatario: str, asunto: str, html: str):
+    """Envía email usando Gmail SMTP. Nombre legacy mantenido para compatibilidad."""
     try:
-        resend.Emails.send({
-            "from": "Monte de Piedad <onboarding@resend.dev>",
-            "to": [destinatario],
-            "subject": asunto,
-            "html": html
-        })
+        msg = MIMEMultipart("alternative")
+        msg["Subject"] = asunto
+        msg["From"]    = f"Monte de Piedad <{GMAIL_USER}>"
+        msg["To"]      = destinatario
+        msg.attach(MIMEText(html, "html", "utf-8"))
+
+        with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
+            server.login(GMAIL_USER, GMAIL_PASS.replace(" ", ""))
+            server.sendmail(GMAIL_USER, destinatario, msg.as_string())
+
         print(f"✅ Email enviado a {destinatario}")
         return True
     except Exception as e:
@@ -245,7 +262,7 @@ def registrar_cliente(request: RegistroClienteRequest):
             (nombre, apellido_paterno, apellido_materno, email, password, rol, 
              curp, telefono, direccion, no_identificacion, activo, 
              email_verificado, codigo_verificacion, fecha_codigo_verificacion)
-            VALUES (%s, %s, %s, %s, %s, 'Cliente', %s, %s, %s, %s, TRUE, FALSE, %s, NOW())
+            VALUES (%s, %s, %s, %s, %s, 'Cliente', %s, %s, %s, %s, TRUE, TRUE, %s, NOW())
         """, (
             request.nombre, request.apellido_paterno, request.apellido_materno,
             request.email, request.password, request.curp, request.telefono,
@@ -255,17 +272,16 @@ def registrar_cliente(request: RegistroClienteRequest):
         db.commit()
         id_cliente = cursor.lastrowid
 
+        # Enviar email de bienvenida (no bloquea el registro si falla)
         try:
-            email_verificacion_cuenta(request.email, codigo_verificacion, request.nombre)
+            email_bienvenida(request.email, request.nombre)
         except Exception as e:
-            cursor.execute("DELETE FROM usuarios WHERE id_usuario = %s", (id_cliente,))
-            db.commit()
-            raise HTTPException(status_code=500, detail=f"No se pudo enviar email de verificación: {str(e)}")
+            print(f"⚠️ Email de bienvenida no enviado: {e}")
 
         return {
             "status": "success",
-            "message": "Registro exitoso. Revisa tu email para verificar tu cuenta.",
-            "requiere_verificacion": True,
+            "message": "Registro exitoso. Ya puedes iniciar sesión.",
+            "requiere_verificacion": False,
             "id_cliente": id_cliente
         }
     except HTTPException:

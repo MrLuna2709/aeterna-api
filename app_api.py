@@ -5,7 +5,7 @@ Con Resend, tabla unificada, y variables de entorno para Railway
 ═══════════════════════════════════════════════════════════════════════════════
 """
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import BackgroundTasks, FastAPI, HTTPException, Query
 from pydantic import BaseModel
 from typing import Optional
 import mysql.connector
@@ -183,6 +183,22 @@ def email_bienvenida(destinatario: str, nombre: str):
     """
     return enviar_email_resend(destinatario, f"🎉 ¡Bienvenido a Monte de Piedad, {nombre}!", html)
 
+
+def enviar_email_bienvenida_background(destinatario: str, nombre: str):
+    """Wrapper para ejecución en segundo plano sin romper la respuesta del endpoint."""
+    try:
+        email_bienvenida(destinatario, nombre)
+    except Exception as e:
+        print(f"⚠️ Email de bienvenida no enviado: {e}")
+
+
+def enviar_email_codigo_recuperacion_background(destinatario: str, codigo: str, nombre: str):
+    """Wrapper para ejecución en segundo plano sin romper la respuesta del endpoint."""
+    try:
+        email_codigo_recuperacion(destinatario, codigo, nombre)
+    except Exception as e:
+        print(f"⚠️ Email de recuperación no enviado: {e}")
+
 # ==================== ENDPOINTS ====================
 
 @app.get("/")
@@ -242,7 +258,7 @@ def login_unificado(request: LoginRequest):
         db.close()
 
 @app.post("/registrar_cliente")
-def registrar_cliente(request: RegistroClienteRequest):
+def registrar_cliente(request: RegistroClienteRequest, background_tasks: BackgroundTasks):
     db = conectar()
     cursor = db.cursor()
     try:
@@ -272,11 +288,8 @@ def registrar_cliente(request: RegistroClienteRequest):
         db.commit()
         id_cliente = cursor.lastrowid
 
-        # Enviar email de bienvenida (no bloquea el registro si falla)
-        try:
-            email_bienvenida(request.email, request.nombre)
-        except Exception as e:
-            print(f"⚠️ Email de bienvenida no enviado: {e}")
+        # Enviar email en background para evitar timeouts en cliente Android
+        background_tasks.add_task(enviar_email_bienvenida_background, request.email, request.nombre)
 
         return {
             "status": "success",
@@ -367,7 +380,7 @@ def reenviar_codigo(email: str = Query(...)):
         db.close()
 
 @app.post("/solicitar_codigo")
-def solicitar_codigo_recuperacion(email: str = Query(...)):
+def solicitar_codigo_recuperacion(background_tasks: BackgroundTasks, email: str = Query(...)):
     db = conectar()
     cursor = db.cursor(dictionary=True)
     try:
@@ -383,11 +396,8 @@ def solicitar_codigo_recuperacion(email: str = Query(...)):
         """, (codigo, email))
         db.commit()
 
-        try:
-            email_codigo_recuperacion(email, codigo, usuario['nombre'])
-        except Exception as mail_error:
-            db.rollback()
-            raise HTTPException(status_code=500, detail=f"Código generado pero no se pudo enviar el correo: {str(mail_error)}")
+        # Enviar email en background para evitar timeouts en cliente Android
+        background_tasks.add_task(enviar_email_codigo_recuperacion_background, email, codigo, usuario['nombre'])
 
         return {"status": "success", "message": f"Código enviado a {email}"}
     except HTTPException:
@@ -511,7 +521,7 @@ class PrestamoRequest(BaseModel):
 class AprobarPrestamoRequest(BaseModel):
     id_prestamo: int
     accion: str  # "aprobar" o "rechazar"
-    id_empleado: Optional[int] = None
+    id_empleado: int
 
 class CrearEmpleadoRequest(BaseModel):
     nombre: str
@@ -810,7 +820,10 @@ def procesar_prestamo(request: AprobarPrestamoRequest):
             db.commit()
             return {"status": "success", "message": f"Préstamo aprobado. Se generaron {plazo} pagos."}
         else:
-            cursor.execute("UPDATE prestamos SET estado='RECHAZADO' WHERE id_prestamo=%s", (request.id_prestamo,))
+            cursor.execute(
+                "UPDATE prestamos SET estado='RECHAZADO', id_aprobador=%s WHERE id_prestamo=%s",
+                (request.id_empleado, request.id_prestamo)
+            )
             db.commit()
             return {"status": "success", "message": "Préstamo rechazado."}
 
@@ -831,27 +844,26 @@ def obtener_estadisticas():
     cursor = db.cursor(dictionary=True)
     try:
         cursor.execute("SELECT COUNT(*) AS total FROM usuarios WHERE rol = 'Cliente' AND activo = TRUE")
-        clientes = cursor.fetchone()['total']
+        total_clientes = int(cursor.fetchone().get('total', 0) or 0)
+
+        cursor.execute("SELECT COUNT(*) AS total FROM prestamos WHERE estado = 'ACTIVO'")
+        prestamos_activos = int(cursor.fetchone().get('total', 0) or 0)
 
         cursor.execute("SELECT COALESCE(SUM(monto_total), 0) AS total FROM prestamos WHERE estado = 'ACTIVO'")
-        capital_activo = float(cursor.fetchone()['total'])
+        capital_otorgado = float(cursor.fetchone().get('total', 0) or 0)
+
+        cursor.execute("SELECT COALESCE(SUM(saldo_pendiente), 0) AS total FROM prestamos WHERE estado = 'ACTIVO'")
+        saldo_pendiente = float(cursor.fetchone().get('total', 0) or 0)
 
         cursor.execute("SELECT COALESCE(SUM(monto_total - saldo_pendiente), 0) AS total FROM prestamos")
-        recuperado = float(cursor.fetchone()['total'])
-
-        cursor.execute("SELECT COUNT(*) AS total FROM prestamos WHERE estado = 'MOROSO'")
-        morosos = cursor.fetchone()['total']
-
-        cursor.execute("SELECT COUNT(*) AS total FROM prestamos WHERE estado = 'PENDIENTE'")
-        pendientes = cursor.fetchone()['total']
+        monto_recuperado = float(cursor.fetchone().get('total', 0) or 0)
 
         return {
-            "status":         "success",
-            "clientes":       clientes,
-            "capital_activo": capital_activo,
-            "recuperado":     recuperado,
-            "morosos":        morosos,
-            "pendientes":     pendientes
+            "total_clientes": total_clientes,
+            "prestamos_activos": prestamos_activos,
+            "capital_otorgado": capital_otorgado,
+            "saldo_pendiente": saldo_pendiente,
+            "monto_recuperado": monto_recuperado
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -958,7 +970,9 @@ def obtener_pagos_pendientes():
         cursor.execute("""
             SELECT g.id_pago, g.id_prestamo, g.numero_pago,
                    g.fecha_vencimiento, g.monto, g.estado,
+                   g.monto AS monto_total,
                    CONCAT('MSP-', p.id_prestamo) AS folio,
+                   CONCAT(u.nombre, ' ', u.apellido_paterno, ' ', COALESCE(u.apellido_materno, '')) AS nombre_cliente,
                    u.nombre, u.apellido_paterno, u.telefono
             FROM pagos g
             JOIN prestamos p ON g.id_prestamo = p.id_prestamo
@@ -971,6 +985,8 @@ def obtener_pagos_pendientes():
             if p.get('fecha_vencimiento') and hasattr(p['fecha_vencimiento'], 'isoformat'):
                 p['fecha_vencimiento'] = p['fecha_vencimiento'].isoformat()
             p['monto'] = float(p['monto'] or 0)
+            p['monto_total'] = float(p['monto_total'] or 0)
+            p['nombre_cliente'] = (p.get('nombre_cliente') or '').strip() or None
         return pagos
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

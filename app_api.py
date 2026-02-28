@@ -805,9 +805,10 @@ def obtener_configuracion():
     db = conectar()
     cursor = db.cursor(dictionary=True)
     try:
-        cursor.execute("SELECT * FROM configuracion_sistema ORDER BY id_config ASC")
+        cursor.execute("SELECT * FROM configuracion_sistema ORDER BY id ASC")
         config = cursor.fetchall()
         for row in config:
+            row['id_config'] = row.get('id', 1)
             row['tasa_interes'] = float(row.get('tasa_interes', 0) or 0)
             row['monto_minimo'] = float(row.get('monto_minimo', 0) or 0)
             row['monto_maximo'] = float(row.get('monto_maximo', 0) or 0)
@@ -848,7 +849,7 @@ def actualizar_configuracion(id_config: int, request: ConfiguracionRequest):
             raise HTTPException(status_code=400, detail="No se enviaron campos para actualizar")
 
         campos.append("fecha_actualizacion = NOW()")
-        query = f"UPDATE configuracion_sistema SET {', '.join(campos)} WHERE id_config = %s"
+        query = f"UPDATE configuracion_sistema SET {', '.join(campos)} WHERE id = %s"
         valores.append(id_config)
 
         cursor.execute(query, tuple(valores))

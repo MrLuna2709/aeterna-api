@@ -80,6 +80,15 @@ class ActualizarPerfilClienteRequest(BaseModel):
     telefono: Optional[str] = None
     direccion: Optional[str] = None
 
+class EditarUsuarioAdminRequest(BaseModel):
+    nombre: str
+    apellido_paterno: str
+    apellido_materno: Optional[str] = None
+    telefono: Optional[str] = None
+    direccion: Optional[str] = None
+    curp: Optional[str] = None
+    no_identificacion: Optional[str] = None
+
 # ==================== FUNCIONES DE EMAIL (RESEND) ====================
 
 def enviar_email_resend(destinatario: str, asunto: str, html: str):
@@ -481,13 +490,13 @@ def obtener_usuarios(rol: Optional[str] = None):
         if rol:
             cursor.execute("""
                 SELECT id_usuario, nombre, apellido_paterno, apellido_materno, 
-                       email, rol, activo, email_verificado, fecha_registro
+                       email, rol, curp, no_identificacion, telefono, activo, email_verificado, fecha_registro
                 FROM usuarios WHERE rol = %s ORDER BY fecha_registro DESC
             """, (rol,))
         else:
             cursor.execute("""
                 SELECT id_usuario, nombre, apellido_paterno, apellido_materno, 
-                       email, rol, activo, email_verificado, fecha_registro
+                       email, rol, curp, no_identificacion, telefono, activo, email_verificado, fecha_registro
                 FROM usuarios ORDER BY fecha_registro DESC
             """)
 
@@ -591,7 +600,81 @@ def actualizar_perfil_cliente(id_cliente: int, request: ActualizarPerfilClienteR
         cursor.close()
         db.close()
 
+# EDITAR USUARIO (ADMIN)
+@app.put("/admin/usuario/{id_usuario}")
+def editar_usuario_admin(id_usuario: int, request: EditarUsuarioAdminRequest):
+    db = conectar()
+    cursor = db.cursor()
+    try:
+        cursor.execute("""
+            SELECT id_usuario, rol FROM usuarios WHERE id_usuario = %s
+        """, (id_usuario,))
+        usuario = cursor.fetchone()
+        if not usuario:
+            raise HTTPException(status_code=404, detail="Usuario no encontrado")
 
+        cursor.execute("""
+            UPDATE usuarios
+            SET nombre = %s,
+                apellido_paterno = %s,
+                apellido_materno = %s,
+                telefono = %s,
+                direccion = %s,
+                curp = %s,
+                no_identificacion = %s
+            WHERE id_usuario = %s
+        """, (
+            request.nombre,
+            request.apellido_paterno,
+            request.apellido_materno,
+            request.telefono,
+            request.direccion,
+            request.curp,
+            request.no_identificacion,
+            id_usuario
+        ))
+        db.commit()
+
+        if cursor.rowcount == 0:
+            raise HTTPException(status_code=404, detail="Usuario no encontrado")
+
+        return {"status": "success", "message": "Usuario actualizado"}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        cursor.close()
+        db.close()
+
+
+# CAMBIAR ESTADO ACTIVO/INACTIVO (ADMIN)
+@app.put("/admin/usuario/{id_usuario}/estado")
+def cambiar_estado_usuario(id_usuario: int, activo: bool):
+    db = conectar()
+    cursor = db.cursor()
+    try:
+        cursor.execute("""
+            UPDATE usuarios SET activo = %s WHERE id_usuario = %s
+        """, (activo, id_usuario))
+        db.commit()
+
+        if cursor.rowcount == 0:
+            raise HTTPException(status_code=404, detail="Usuario no encontrado")
+
+        estado = "activado" if activo else "desactivado"
+        return {"status": "success", "message": f"Usuario {estado}"}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        cursor.close()
+        db.close()
 # ==================== MODELOS ADICIONALES ====================
 
 class PrestamoRequest(BaseModel):

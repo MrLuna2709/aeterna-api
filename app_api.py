@@ -13,13 +13,13 @@ from datetime import datetime, timedelta
 import random
 import os
 
-# ==================== BREVO SMTP ====================
+# ==================== GMAIL SMTP ====================
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 
-BREVO_USER = os.environ.get("BREVO_SMTP_USER", "")
-BREVO_PASS = os.environ.get("BREVO_SMTP_PASS", "")
+GMAIL_USER = os.environ.get("GMAIL_USER", "noreplymonte2@gmail.com")
+GMAIL_PASS = os.environ.get("GMAIL_PASS", "ccmr hnrv zjxc iwbv")
 
 # ==================== CONFIGURACIÓN BD (VARIABLES DE ENTORNO) ====================
 DB_CONFIG = {
@@ -80,30 +80,34 @@ class ActualizarPerfilClienteRequest(BaseModel):
     telefono: Optional[str] = None
     direccion: Optional[str] = None
 
+class EditarUsuarioAdminRequest(BaseModel):
+    nombre: str
+    apellido_paterno: str
+    apellido_materno: Optional[str] = None
+    telefono: Optional[str] = None
+    direccion: Optional[str] = None
+    curp: Optional[str] = None
+    no_identificacion: Optional[str] = None
+
 # ==================== FUNCIONES DE EMAIL (RESEND) ====================
 
 def enviar_email_resend(destinatario: str, asunto: str, html: str):
-    """Envía email vía Brevo SMTP. Nombre legacy mantenido para compatibilidad."""
-    if not BREVO_USER or not BREVO_PASS:
-        raise Exception("BREVO_SMTP_USER / BREVO_SMTP_PASS no configuradas en Railway")
-
+    """Envía email usando Gmail SMTP. Nombre legacy mantenido para compatibilidad."""
     try:
         msg = MIMEMultipart("alternative")
         msg["Subject"] = asunto
-        msg["From"]    = f"Monte de Piedad <{BREVO_USER}>"
+        msg["From"]    = f"Monte de Piedad <{GMAIL_USER}>"
         msg["To"]      = destinatario
         msg.attach(MIMEText(html, "html", "utf-8"))
 
-        with smtplib.SMTP("smtp-relay.brevo.com", 587) as server:
-            server.ehlo()
-            server.starttls()
-            server.login(BREVO_USER, BREVO_PASS)
-            server.sendmail(BREVO_USER, destinatario, msg.as_string())
+        with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
+            server.login(GMAIL_USER, GMAIL_PASS.replace(" ", ""))
+            server.sendmail(GMAIL_USER, destinatario, msg.as_string())
 
         print(f"✅ Email enviado a {destinatario}")
         return True
     except Exception as e:
-        print(f"❌ Error Brevo SMTP: {e}")
+        print(f"❌ Error enviando email: {e}")
         raise Exception(f"No se pudo enviar el correo: {str(e)}")
 
 def email_codigo_recuperacion(destinatario: str, codigo: str, nombre: str = "Usuario"):
@@ -486,13 +490,13 @@ def obtener_usuarios(rol: Optional[str] = None):
         if rol:
             cursor.execute("""
                 SELECT id_usuario, nombre, apellido_paterno, apellido_materno, 
-                       email, rol, activo, email_verificado, fecha_registro
+                       email, rol, curp, no_identificacion, telefono, activo, email_verificado, fecha_registro
                 FROM usuarios WHERE rol = %s ORDER BY fecha_registro DESC
             """, (rol,))
         else:
             cursor.execute("""
                 SELECT id_usuario, nombre, apellido_paterno, apellido_materno, 
-                       email, rol, activo, email_verificado, fecha_registro
+                       email, rol, curp, no_identificacion, telefono, activo, email_verificado, fecha_registro
                 FROM usuarios ORDER BY fecha_registro DESC
             """)
 
@@ -596,7 +600,81 @@ def actualizar_perfil_cliente(id_cliente: int, request: ActualizarPerfilClienteR
         cursor.close()
         db.close()
 
+# EDITAR USUARIO (ADMIN)
+@app.put("/admin/usuario/{id_usuario}")
+def editar_usuario_admin(id_usuario: int, request: EditarUsuarioAdminRequest):
+    db = conectar()
+    cursor = db.cursor()
+    try:
+        cursor.execute("""
+            SELECT id_usuario, rol FROM usuarios WHERE id_usuario = %s
+        """, (id_usuario,))
+        usuario = cursor.fetchone()
+        if not usuario:
+            raise HTTPException(status_code=404, detail="Usuario no encontrado")
 
+        cursor.execute("""
+            UPDATE usuarios
+            SET nombre = %s,
+                apellido_paterno = %s,
+                apellido_materno = %s,
+                telefono = %s,
+                direccion = %s,
+                curp = %s,
+                no_identificacion = %s
+            WHERE id_usuario = %s
+        """, (
+            request.nombre,
+            request.apellido_paterno,
+            request.apellido_materno,
+            request.telefono,
+            request.direccion,
+            request.curp,
+            request.no_identificacion,
+            id_usuario
+        ))
+        db.commit()
+
+        if cursor.rowcount == 0:
+            raise HTTPException(status_code=404, detail="Usuario no encontrado")
+
+        return {"status": "success", "message": "Usuario actualizado"}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        cursor.close()
+        db.close()
+
+
+# CAMBIAR ESTADO ACTIVO/INACTIVO (ADMIN)
+@app.put("/admin/usuario/{id_usuario}/estado")
+def cambiar_estado_usuario(id_usuario: int, activo: bool):
+    db = conectar()
+    cursor = db.cursor()
+    try:
+        cursor.execute("""
+            UPDATE usuarios SET activo = %s WHERE id_usuario = %s
+        """, (activo, id_usuario))
+        db.commit()
+
+        if cursor.rowcount == 0:
+            raise HTTPException(status_code=404, detail="Usuario no encontrado")
+
+        estado = "activado" if activo else "desactivado"
+        return {"status": "success", "message": f"Usuario {estado}"}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        cursor.close()
+        db.close()
 # ==================== MODELOS ADICIONALES ====================
 
 class PrestamoRequest(BaseModel):
@@ -810,9 +888,10 @@ def obtener_configuracion():
     db = conectar()
     cursor = db.cursor(dictionary=True)
     try:
-        cursor.execute("SELECT * FROM configuracion_sistema ORDER BY id_config ASC")
+        cursor.execute("SELECT * FROM configuracion_sistema ORDER BY id ASC")
         config = cursor.fetchall()
         for row in config:
+            row['id_config'] = row.get('id', 1)
             row['tasa_interes'] = float(row.get('tasa_interes', 0) or 0)
             row['monto_minimo'] = float(row.get('monto_minimo', 0) or 0)
             row['monto_maximo'] = float(row.get('monto_maximo', 0) or 0)
@@ -853,7 +932,7 @@ def actualizar_configuracion(id_config: int, request: ConfiguracionRequest):
             raise HTTPException(status_code=400, detail="No se enviaron campos para actualizar")
 
         campos.append("fecha_actualizacion = NOW()")
-        query = f"UPDATE configuracion_sistema SET {', '.join(campos)} WHERE id_config = %s"
+        query = f"UPDATE configuracion_sistema SET {', '.join(campos)} WHERE id = %s"
         valores.append(id_config)
 
         cursor.execute(query, tuple(valores))
@@ -1217,7 +1296,37 @@ def buscar_ticket(folio: str):
         cursor.close()
         db.close()
 
-
+@app.get("/admin/folios")
+def obtener_folios_admin(fecha: Optional[str] = Query(None)):
+    db = conectar()
+    cursor = db.cursor(dictionary=True)
+    try:
+        fecha_filtro = fecha if fecha else datetime.now().strftime("%Y-%m-%d")
+        cursor.execute("""
+            SELECT t.id_ticket, t.folio, t.monto_pagado, t.fecha_generacion,
+                   t.metodo_pago, t.tipo,
+                   CONCAT('MSP-', p.id_prestamo) AS folio_prestamo,
+                   u.nombre, u.apellido_paterno
+            FROM tickets_pagos t
+            JOIN pagos g ON t.id_pago = g.id_pago
+            JOIN prestamos p ON g.id_prestamo = p.id_prestamo
+            JOIN usuarios u ON p.id_cliente = u.id_usuario
+            WHERE DATE(t.fecha_generacion) = %s AND t.estado = 'ACTIVO'
+            ORDER BY t.fecha_generacion DESC
+        """, (fecha_filtro,))
+        movimientos = cursor.fetchall()
+        for m in movimientos:
+            if m.get('fecha_generacion') and hasattr(m['fecha_generacion'], 'isoformat'):
+                m['fecha_generacion'] = m['fecha_generacion'].isoformat()
+            m['monto_pagado'] = float(m['monto_pagado'] or 0)
+        total = sum(m['monto_pagado'] for m in movimientos)
+        return {"status": "success", "fecha": fecha_filtro, "total_pagos": len(movimientos), "total_cobrado": total, "movimientos": movimientos}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        cursor.close()
+        db.close()
+        
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)

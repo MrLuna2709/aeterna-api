@@ -1296,7 +1296,37 @@ def buscar_ticket(folio: str):
         cursor.close()
         db.close()
 
-
+@app.get("/admin/folios")
+def obtener_folios_admin(fecha: Optional[str] = Query(None)):
+    db = conectar()
+    cursor = db.cursor(dictionary=True)
+    try:
+        fecha_filtro = fecha if fecha else datetime.now().strftime("%Y-%m-%d")
+        cursor.execute("""
+            SELECT t.id_ticket, t.folio, t.monto_pagado, t.fecha_generacion,
+                   t.metodo_pago, t.tipo,
+                   CONCAT('MSP-', p.id_prestamo) AS folio_prestamo,
+                   u.nombre, u.apellido_paterno
+            FROM tickets_pagos t
+            JOIN pagos g ON t.id_pago = g.id_pago
+            JOIN prestamos p ON g.id_prestamo = p.id_prestamo
+            JOIN usuarios u ON p.id_cliente = u.id_usuario
+            WHERE DATE(t.fecha_generacion) = %s AND t.estado = 'ACTIVO'
+            ORDER BY t.fecha_generacion DESC
+        """, (fecha_filtro,))
+        movimientos = cursor.fetchall()
+        for m in movimientos:
+            if m.get('fecha_generacion') and hasattr(m['fecha_generacion'], 'isoformat'):
+                m['fecha_generacion'] = m['fecha_generacion'].isoformat()
+            m['monto_pagado'] = float(m['monto_pagado'] or 0)
+        total = sum(m['monto_pagado'] for m in movimientos)
+        return {"status": "success", "fecha": fecha_filtro, "total_pagos": len(movimientos), "total_cobrado": total, "movimientos": movimientos}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        cursor.close()
+        db.close()
+        
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)

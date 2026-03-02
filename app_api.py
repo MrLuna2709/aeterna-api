@@ -13,13 +13,10 @@ from datetime import datetime, timedelta
 import random
 import os
 
-# ==================== BREVO SMTP ====================
-import smtplib
-from email.mime.text import MIMEText
-from email.mime.multipart import MIMEMultipart
+# ==================== BREVO API ====================
+import requests
 
-BREVO_USER = os.environ.get("BREVO_SMTP_USER", "")
-BREVO_PASS = os.environ.get("BREVO_SMTP_PASS", "")
+BREVO_API_KEY = os.environ.get("BREVO_API_KEY", "")
 
 # ==================== CONFIGURACIÓN BD (VARIABLES DE ENTORNO) ====================
 DB_CONFIG = {
@@ -83,27 +80,36 @@ class ActualizarPerfilClienteRequest(BaseModel):
 # ==================== FUNCIONES DE EMAIL (RESEND) ====================
 
 def enviar_email_resend(destinatario: str, asunto: str, html: str):
-    """Envía email vía Brevo SMTP. Nombre legacy mantenido para compatibilidad."""
-    if not BREVO_USER or not BREVO_PASS:
-        raise Exception("BREVO_SMTP_USER / BREVO_SMTP_PASS no configuradas en Railway")
+    """Envía email via API HTTP de Brevo (puerto 443). Nombre legacy mantenido para compatibilidad."""
+    if not BREVO_API_KEY:
+        raise Exception("BREVO_API_KEY no configurada en las variables de entorno de Railway")
+
+    url = "https://api.brevo.com/v3/smtp/email"
+    payload = {
+        "sender": {"name": "Monte de Piedad", "email": "hangelica957@gmail.com"},
+        "to": [{"email": destinatario}],
+        "subject": asunto,
+        "htmlContent": html,
+    }
+    headers = {
+        "accept": "application/json",
+        "content-type": "application/json",
+        "api-key": BREVO_API_KEY,
+    }
 
     try:
-        msg = MIMEMultipart("alternative")
-        msg["Subject"] = asunto
-        msg["From"]    = f"Monte de Piedad <{BREVO_USER}>"
-        msg["To"]      = destinatario
-        msg.attach(MIMEText(html, "html", "utf-8"))
+        response = requests.post(url, json=payload, headers=headers, timeout=10)
+        if response.status_code in (200, 201):
+            msg_id = response.json().get("messageId", "n/a")
+            print(f"✅ Email enviado a {destinatario} — messageId: {msg_id}")
+            return True
 
-        with smtplib.SMTP("smtp-relay.brevo.com", 587) as server:
-            server.ehlo()
-            server.starttls()
-            server.login(BREVO_USER, BREVO_PASS)
-            server.sendmail(BREVO_USER, destinatario, msg.as_string())
-
-        print(f"✅ Email enviado a {destinatario}")
-        return True
+        error_detail = response.json().get("message", response.text)
+        raise Exception(f"Brevo API error {response.status_code}: {error_detail}")
+    except requests.exceptions.Timeout:
+        raise Exception("Timeout al conectar con Brevo API")
     except Exception as e:
-        print(f"❌ Error Brevo SMTP: {e}")
+        print(f"❌ Error Brevo API: {e}")
         raise Exception(f"No se pudo enviar el correo: {str(e)}")
 
 def email_codigo_recuperacion(destinatario: str, codigo: str, nombre: str = "Usuario"):

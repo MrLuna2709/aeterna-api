@@ -13,3 +13,6 @@ python-multipart==0.0.20
 
 # Email con Resend
 resend==2.22.0
+
+# HTTP client
+requests==2.32.3

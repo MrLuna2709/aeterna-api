@@ -5,7 +5,7 @@ Con Resend, tabla unificada, y variables de entorno para Railway
 ═══════════════════════════════════════════════════════════════════════════════
 """
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import BackgroundTasks, FastAPI, HTTPException, Query
 from pydantic import BaseModel
 from typing import Optional
 import mysql.connector
@@ -13,13 +13,10 @@ from datetime import datetime, timedelta
 import random
 import os
 
-# ==================== GMAIL SMTP ====================
-import smtplib
-from email.mime.text import MIMEText
-from email.mime.multipart import MIMEMultipart
+# ==================== BREVO API ====================
+import requests
 
-GMAIL_USER = os.environ.get("GMAIL_USER", "noreplymonte2@gmail.com")
-GMAIL_PASS = os.environ.get("GMAIL_PASS", "ccmr hnrv zjxc iwbv")
+BREVO_API_KEY = os.environ.get("BREVO_API_KEY", "")
 
 # ==================== CONFIGURACIÓN BD (VARIABLES DE ENTORNO) ====================
 DB_CONFIG = {
@@ -62,6 +59,7 @@ class RegistroClienteRequest(BaseModel):
     telefono: Optional[str] = None
     direccion: Optional[str] = None
     no_identificacion: Optional[str] = None
+    fecha_nacimiento: Optional[str] = None
 
 class VerificarEmailRequest(BaseModel):
     email: str
@@ -72,25 +70,46 @@ class RecuperacionRequest(BaseModel):
     codigo: str
     nueva_password: str
 
+class ActualizarPerfilClienteRequest(BaseModel):
+    nombre: str
+    apellido_paterno: str
+    apellido_materno: Optional[str] = None
+    telefono: Optional[str] = None
+    direccion: Optional[str] = None
+
 # ==================== FUNCIONES DE EMAIL (RESEND) ====================
 
 def enviar_email_resend(destinatario: str, asunto: str, html: str):
-    """Envía email usando Gmail SMTP. Nombre legacy mantenido para compatibilidad."""
+    """Envía email via API HTTP de Brevo (puerto 443). Nombre legacy mantenido para compatibilidad."""
+    if not BREVO_API_KEY:
+        raise Exception("BREVO_API_KEY no configurada en las variables de entorno de Railway")
+
+    url = "https://api.brevo.com/v3/smtp/email"
+    payload = {
+        "sender": {"name": "Monte sin Piedad", "email": "hangelica957@gmail.com"},
+        "to": [{"email": destinatario}],
+        "subject": asunto,
+        "htmlContent": html,
+    }
+    headers = {
+        "accept": "application/json",
+        "content-type": "application/json",
+        "api-key": BREVO_API_KEY,
+    }
+
     try:
-        msg = MIMEMultipart("alternative")
-        msg["Subject"] = asunto
-        msg["From"]    = f"Monte de Piedad <{GMAIL_USER}>"
-        msg["To"]      = destinatario
-        msg.attach(MIMEText(html, "html", "utf-8"))
+        response = requests.post(url, json=payload, headers=headers, timeout=10)
+        if response.status_code in (200, 201):
+            msg_id = response.json().get("messageId", "n/a")
+            print(f"✅ Email enviado a {destinatario} — messageId: {msg_id}")
+            return True
 
-        with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
-            server.login(GMAIL_USER, GMAIL_PASS.replace(" ", ""))
-            server.sendmail(GMAIL_USER, destinatario, msg.as_string())
-
-        print(f"✅ Email enviado a {destinatario}")
-        return True
+        error_detail = response.json().get("message", response.text)
+        raise Exception(f"Brevo API error {response.status_code}: {error_detail}")
+    except requests.exceptions.Timeout:
+        raise Exception("Timeout al conectar con Brevo API")
     except Exception as e:
-        print(f"❌ Error enviando email: {e}")
+        print(f"❌ Error Brevo API: {e}")
         raise Exception(f"No se pudo enviar el correo: {str(e)}")
 
 def email_codigo_recuperacion(destinatario: str, codigo: str, nombre: str = "Usuario"):
@@ -105,7 +124,7 @@ def email_codigo_recuperacion(destinatario: str, codigo: str, nombre: str = "Usu
         </div>
         <div style="padding:40px 30px;">
           <p style="color:#475569;line-height:1.6;">Hola <strong>{nombre}</strong>,</p>
-          <p style="color:#475569;line-height:1.6;">Recibimos una solicitud para restablecer tu contraseña en <strong>Monte de Piedad</strong>.</p>
+          <p style="color:#475569;line-height:1.6;">Recibimos una solicitud para restablecer tu contraseña en <strong>Monte sin Piedad</strong>.</p>
           <p style="color:#475569;line-height:1.6;">Usa el siguiente código de verificación:</p>
           <div style="background:#f8fafc;border:2px solid #e2e8f0;border-radius:12px;padding:30px;text-align:center;margin:30px 0;">
             <div style="font-size:40px;font-weight:900;color:#A6032F;letter-spacing:12px;font-family:'Courier New',monospace;">{codigo}</div>
@@ -117,7 +136,7 @@ def email_codigo_recuperacion(destinatario: str, codigo: str, nombre: str = "Usu
           <p style="color:#64748b;font-size:14px;line-height:1.6;margin-top:30px;">Por tu seguridad, nunca compartas este código con nadie.</p>
         </div>
         <div style="text-align:center;padding:30px;font-size:12px;color:#94a3b8;border-top:1px solid #e2e8f0;">
-          <p>© {datetime.now().year} Monte de Piedad | Sistema Seguro</p>
+          <p>© {datetime.now().year} Monte sin Piedad | Sistema Seguro</p>
           <p style="margin-top:5px;">Este es un correo automático, no respondas a esta dirección.</p>
         </div>
       </div>
@@ -138,7 +157,7 @@ def email_verificacion_cuenta(destinatario: str, codigo: str, nombre: str):
         </div>
         <div style="padding:40px 30px;">
           <p style="color:#475569;line-height:1.6;">Hola <strong>{nombre}</strong>,</p>
-          <p style="color:#475569;line-height:1.6;">¡Bienvenido a <strong>Monte de Piedad</strong>! Para completar tu registro, verifica tu email con el siguiente código:</p>
+          <p style="color:#475569;line-height:1.6;">¡Bienvenido a <strong>Monte sin Piedad</strong>! Para completar tu registro, verifica tu email con el siguiente código:</p>
           <div style="background:#f8fafc;border:2px solid #e2e8f0;border-radius:12px;padding:30px;text-align:center;margin:30px 0;">
             <div style="font-size:40px;font-weight:900;color:#10b981;letter-spacing:12px;font-family:'Courier New',monospace;">{codigo}</div>
             <div style="font-size:12px;color:#64748b;margin-top:10px;">Código de verificación</div>
@@ -148,13 +167,13 @@ def email_verificacion_cuenta(destinatario: str, codigo: str, nombre: str):
           </div>
         </div>
         <div style="text-align:center;padding:30px;font-size:12px;color:#94a3b8;border-top:1px solid #e2e8f0;">
-          <p>© {datetime.now().year} Monte de Piedad</p>
+          <p>© {datetime.now().year} Monte sin Piedad</p>
         </div>
       </div>
     </body>
     </html>
     """
-    return enviar_email_resend(destinatario, "✅ Verifica tu cuenta - Monte de Piedad", html)
+    return enviar_email_resend(destinatario, "✅ Verifica tu cuenta - Monte sin Piedad", html)
 
 def email_bienvenida(destinatario: str, nombre: str):
     html = f"""
@@ -164,7 +183,7 @@ def email_bienvenida(destinatario: str, nombre: str):
     <body style="font-family:Arial,sans-serif;background:#f1f5f9;margin:0;padding:20px;">
       <div style="max-width:500px;margin:auto;background:#fff;border-radius:16px;overflow:hidden;box-shadow:0 4px 6px rgba(0,0,0,0.1);">
         <div style="background:linear-gradient(135deg,#A6032F,#800020);padding:50px 30px;text-align:center;">
-          <h1 style="color:white;margin:0 0 10px 0;font-size:28px;">¡Bienvenido a Monte de Piedad! 🎉</h1>
+          <h1 style="color:white;margin:0 0 10px 0;font-size:28px;">¡Bienvenido a Monte sin Piedad! 🎉</h1>
           <p style="color:rgba(255,255,255,0.9);margin:0;">Tu cuenta ha sido creada exitosamente</p>
         </div>
         <div style="padding:40px 30px;">
@@ -175,13 +194,37 @@ def email_bienvenida(destinatario: str, nombre: str):
           <p style="color:#64748b;font-size:14px;line-height:1.6;margin-top:30px;">Si tienes alguna duda, nuestro equipo está disponible para asistirte.</p>
         </div>
         <div style="text-align:center;padding:30px;font-size:12px;color:#94a3b8;border-top:1px solid #e2e8f0;">
-          <p>© {datetime.now().year} Monte de Piedad | Sistema Seguro</p>
+          <p>© {datetime.now().year} Monte sin Piedad | Sistema Seguro</p>
         </div>
       </div>
     </body>
     </html>
     """
-    return enviar_email_resend(destinatario, f"🎉 ¡Bienvenido a Monte de Piedad, {nombre}!", html)
+    return enviar_email_resend(destinatario, f"🎉 ¡Bienvenido a Monte sin Piedad, {nombre}!", html)
+
+
+def enviar_email_bienvenida_background(destinatario: str, nombre: str):
+    """Wrapper para ejecución en segundo plano sin romper la respuesta del endpoint."""
+    try:
+        email_bienvenida(destinatario, nombre)
+    except Exception as e:
+        print(f"⚠️ Email de bienvenida no enviado: {e}")
+
+
+def enviar_email_verificacion_background(destinatario: str, codigo: str, nombre: str):
+    """Wrapper para ejecución en segundo plano sin romper la respuesta del endpoint."""
+    try:
+        email_verificacion_cuenta(destinatario, codigo, nombre)
+    except Exception as e:
+        print(f"⚠️ Email de verificación no enviado: {e}")
+
+
+def enviar_email_codigo_recuperacion_background(destinatario: str, codigo: str, nombre: str):
+    """Wrapper para ejecución en segundo plano sin romper la respuesta del endpoint."""
+    try:
+        email_codigo_recuperacion(destinatario, codigo, nombre)
+    except Exception as e:
+        print(f"⚠️ Email de recuperación no enviado: {e}")
 
 # ==================== ENDPOINTS ====================
 
@@ -242,7 +285,7 @@ def login_unificado(request: LoginRequest):
         db.close()
 
 @app.post("/registrar_cliente")
-def registrar_cliente(request: RegistroClienteRequest):
+def registrar_cliente(request: RegistroClienteRequest, background_tasks: BackgroundTasks):
     db = conectar()
     cursor = db.cursor()
     try:
@@ -259,29 +302,32 @@ def registrar_cliente(request: RegistroClienteRequest):
 
         cursor.execute("""
             INSERT INTO usuarios 
-            (nombre, apellido_paterno, apellido_materno, email, password, rol, 
-             curp, telefono, direccion, no_identificacion, activo, 
+            (nombre, apellido_paterno, apellido_materno, email, password, rol,
+             curp, telefono, direccion, no_identificacion, fecha_nacimiento, activo,
              email_verificado, codigo_verificacion, fecha_codigo_verificacion)
-            VALUES (%s, %s, %s, %s, %s, 'Cliente', %s, %s, %s, %s, TRUE, TRUE, %s, NOW())
+            VALUES (%s, %s, %s, %s, %s, 'Cliente', %s, %s, %s, %s, %s, TRUE, FALSE, %s, NOW())
         """, (
             request.nombre, request.apellido_paterno, request.apellido_materno,
             request.email, request.password, request.curp, request.telefono,
-            request.direccion, request.no_identificacion, codigo_verificacion
+            request.direccion, request.no_identificacion, request.fecha_nacimiento,
+            codigo_verificacion
         ))
 
         db.commit()
         id_cliente = cursor.lastrowid
 
-        # Enviar email de bienvenida (no bloquea el registro si falla)
-        try:
-            email_bienvenida(request.email, request.nombre)
-        except Exception as e:
-            print(f"⚠️ Email de bienvenida no enviado: {e}")
+        # Enviar email en background para evitar timeouts en cliente Android
+        background_tasks.add_task(
+            enviar_email_verificacion_background,
+            request.email,
+            codigo_verificacion,
+            request.nombre
+        )
 
         return {
             "status": "success",
-            "message": "Registro exitoso. Ya puedes iniciar sesión.",
-            "requiere_verificacion": False,
+            "message": "Registro exitoso. Verifica tu email para activar tu cuenta.",
+            "requiere_verificacion": True,
             "id_cliente": id_cliente
         }
     except HTTPException:
@@ -367,7 +413,8 @@ def reenviar_codigo(email: str = Query(...)):
         db.close()
 
 @app.post("/solicitar_codigo")
-def solicitar_codigo_recuperacion(email: str = Query(...)):
+@app.post("/solicitor_codigo")
+def solicitar_codigo_recuperacion(background_tasks: BackgroundTasks, email: str = Query(...)):
     db = conectar()
     cursor = db.cursor(dictionary=True)
     try:
@@ -383,11 +430,8 @@ def solicitar_codigo_recuperacion(email: str = Query(...)):
         """, (codigo, email))
         db.commit()
 
-        try:
-            email_codigo_recuperacion(email, codigo, usuario['nombre'])
-        except Exception as mail_error:
-            db.rollback()
-            raise HTTPException(status_code=500, detail=f"Código generado pero no se pudo enviar el correo: {str(mail_error)}")
+        # Enviar email en background para evitar timeouts en cliente Android
+        background_tasks.add_task(enviar_email_codigo_recuperacion_background, email, codigo, usuario['nombre'])
 
         return {"status": "success", "message": f"Código enviado a {email}"}
     except HTTPException:
@@ -501,6 +545,64 @@ def obtener_usuario(id_usuario: int):
         db.close()
 
 
+@app.get("/cliente/{id_cliente}/perfil")
+def obtener_perfil_cliente(id_cliente: int):
+    db = conectar()
+    cursor = db.cursor(dictionary=True)
+    try:
+        cursor.execute("""
+            SELECT id_usuario, nombre, apellido_paterno, apellido_materno, email,
+                   curp, telefono, direccion, no_identificacion, fecha_nacimiento
+            FROM usuarios
+            WHERE id_usuario = %s AND rol = 'Cliente'
+        """, (id_cliente,))
+        perfil = cursor.fetchone()
+        if not perfil:
+            raise HTTPException(status_code=404, detail="Cliente no encontrado")
+
+        if perfil.get('fecha_nacimiento') and hasattr(perfil['fecha_nacimiento'], 'isoformat'):
+            perfil['fecha_nacimiento'] = perfil['fecha_nacimiento'].isoformat()
+        return {"status": "success", "perfil": perfil}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        cursor.close()
+        db.close()
+
+
+@app.put("/cliente/{id_cliente}/perfil")
+def actualizar_perfil_cliente(id_cliente: int, request: ActualizarPerfilClienteRequest):
+    db = conectar()
+    cursor = db.cursor()
+    try:
+        cursor.execute("""
+            UPDATE usuarios
+            SET nombre=%s, apellido_paterno=%s, apellido_materno=%s, telefono=%s, direccion=%s
+            WHERE id_usuario=%s AND rol='Cliente'
+        """, (
+            request.nombre,
+            request.apellido_paterno,
+            request.apellido_materno,
+            request.telefono,
+            request.direccion,
+            id_cliente
+        ))
+        db.commit()
+        if cursor.rowcount == 0:
+            raise HTTPException(status_code=404, detail="Cliente no encontrado")
+        return {"status": "success", "message": "Perfil actualizado"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        cursor.close()
+        db.close()
+
+
 # ==================== MODELOS ADICIONALES ====================
 
 class PrestamoRequest(BaseModel):
@@ -511,7 +613,7 @@ class PrestamoRequest(BaseModel):
 class AprobarPrestamoRequest(BaseModel):
     id_prestamo: int
     accion: str  # "aprobar" o "rechazar"
-    id_empleado: Optional[int] = None
+    id_empleado: int
 
 class CrearEmpleadoRequest(BaseModel):
     nombre: str
@@ -520,13 +622,17 @@ class CrearEmpleadoRequest(BaseModel):
     email: str
     password: str
     telefono: Optional[str] = None
+    rol: str = "Empleado"
 
 class RegistrarPagoRequest(BaseModel):
     id_pago: int
     id_empleado: int
 
 class ConfiguracionRequest(BaseModel):
-    valor: str
+    tasa_interes: Optional[float] = None
+    plazo_maximo: Optional[int] = None
+    monto_minimo: Optional[float] = None
+    monto_maximo: Optional[float] = None
 
 # ==================== ENDPOINTS CLIENTE ====================
 
@@ -615,7 +721,12 @@ def obtener_mis_prestamos(id_cliente: Optional[int] = Query(None), id_cliente_pa
 
 # 7. CARTERA (resumen financiero del cliente)
 @app.get("/cliente/cartera")
-def obtener_cartera(id_cliente: int = Query(...)):
+@app.get("/cliente/{id_cliente_path}/cartera")
+def obtener_cartera(id_cliente: Optional[int] = Query(None), id_cliente_path: Optional[int] = None):
+    if id_cliente is None and id_cliente_path is not None:
+        id_cliente = id_cliente_path
+    if id_cliente is None:
+        raise HTTPException(status_code=400, detail="Se requiere id_cliente")
     db = conectar()
     cursor = db.cursor(dictionary=True)
     try:
@@ -705,8 +816,15 @@ def obtener_configuracion():
     db = conectar()
     cursor = db.cursor(dictionary=True)
     try:
-        cursor.execute("SELECT * FROM configuracion_sistema")
+        cursor.execute("SELECT * FROM configuracion_sistema ORDER BY id_config ASC")
         config = cursor.fetchall()
+        for row in config:
+            row['tasa_interes'] = float(row.get('tasa_interes', 0) or 0)
+            row['monto_minimo'] = float(row.get('monto_minimo', 0) or 0)
+            row['monto_maximo'] = float(row.get('monto_maximo', 0) or 0)
+            row['plazo_maximo'] = int(row.get('plazo_maximo', 0) or 0)
+            if row.get('fecha_actualizacion') and hasattr(row['fecha_actualizacion'], 'isoformat'):
+                row['fecha_actualizacion'] = row['fecha_actualizacion'].isoformat()
         return {"status": "success", "configuracion": config}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -721,7 +839,30 @@ def actualizar_configuracion(id_config: int, request: ConfiguracionRequest):
     db = conectar()
     cursor = db.cursor()
     try:
-        cursor.execute("UPDATE configuracion_sistema SET valor = %s WHERE id_config = %s", (request.valor, id_config))
+        campos = []
+        valores = []
+
+        if request.tasa_interes is not None:
+            campos.append("tasa_interes = %s")
+            valores.append(str(float(request.tasa_interes)))
+        if request.plazo_maximo is not None:
+            campos.append("plazo_maximo = %s")
+            valores.append(int(request.plazo_maximo))
+        if request.monto_minimo is not None:
+            campos.append("monto_minimo = %s")
+            valores.append(str(float(request.monto_minimo)))
+        if request.monto_maximo is not None:
+            campos.append("monto_maximo = %s")
+            valores.append(str(float(request.monto_maximo)))
+
+        if not campos:
+            raise HTTPException(status_code=400, detail="No se enviaron campos para actualizar")
+
+        campos.append("fecha_actualizacion = NOW()")
+        query = f"UPDATE configuracion_sistema SET {', '.join(campos)} WHERE id_config = %s"
+        valores.append(id_config)
+
+        cursor.execute(query, tuple(valores))
         db.commit()
         if cursor.rowcount == 0:
             raise HTTPException(status_code=404, detail="Configuración no encontrada")
@@ -810,7 +951,10 @@ def procesar_prestamo(request: AprobarPrestamoRequest):
             db.commit()
             return {"status": "success", "message": f"Préstamo aprobado. Se generaron {plazo} pagos."}
         else:
-            cursor.execute("UPDATE prestamos SET estado='RECHAZADO' WHERE id_prestamo=%s", (request.id_prestamo,))
+            cursor.execute(
+                "UPDATE prestamos SET estado='RECHAZADO', id_aprobador=%s WHERE id_prestamo=%s",
+                (request.id_empleado, request.id_prestamo)
+            )
             db.commit()
             return {"status": "success", "message": "Préstamo rechazado."}
 
@@ -824,34 +968,98 @@ def procesar_prestamo(request: AprobarPrestamoRequest):
         db.close()
 
 
+@app.get("/admin/folios")
+def obtener_folios_admin(fecha: Optional[str] = Query(None)):
+    """
+    Respuesta compatible con Android (CorteCajaResponse):
+    {
+      "status": "success",
+      "fecha": "YYYY-MM-DD",
+      "total_pagos": int,
+      "total_cobrado": float,
+      "movimientos": [
+        {
+          "id_ticket": int,
+          "folio": str,
+          "monto_pagado": float,
+          "fecha_generacion": "ISO-8601",
+          "metodo_pago": str,
+          "tipo": str,
+          "folio_prestamo": "MSP-{id}",
+          "nombre": str,
+          "apellido_paterno": str
+        }
+      ]
+    }
+    """
+    db = conectar()
+    cursor = db.cursor(dictionary=True)
+    try:
+        fecha_filtro = fecha if fecha else datetime.now().strftime("%Y-%m-%d")
+
+        cursor.execute(
+            """
+            SELECT t.id_ticket,
+                   t.folio,
+                   t.monto_pagado,
+                   t.fecha_generacion,
+                   t.metodo_pago,
+                   t.tipo,
+                   CONCAT('MSP-', p.id_prestamo) AS folio_prestamo,
+                   u.nombre,
+                   u.apellido_paterno
+            FROM tickets_pagos t
+            JOIN pagos g ON t.id_pago = g.id_pago
+            JOIN prestamos p ON g.id_prestamo = p.id_prestamo
+            JOIN usuarios u ON p.id_cliente = u.id_usuario
+            WHERE DATE(t.fecha_generacion) = %s
+              AND LOWER(t.estado) = 'activo'
+            ORDER BY t.fecha_generacion DESC
+            """,
+            (fecha_filtro,),
+        )
+
+        movimientos = cursor.fetchall()
+
+        for m in movimientos:
+            if m.get("fecha_generacion") and hasattr(m["fecha_generacion"], "isoformat"):
+                m["fecha_generacion"] = m["fecha_generacion"].isoformat()
+            m["monto_pagado"] = float(m.get("monto_pagado") or 0)
+            m["metodo_pago"] = (m.get("metodo_pago") or "").upper()
+            m["tipo"] = (m.get("tipo") or "pago").upper()
+
+        total = float(sum(m["monto_pagado"] for m in movimientos))
+
+        return {
+            "status": "success",
+            "fecha": fecha_filtro,
+            "total_pagos": len(movimientos),
+            "total_cobrado": total,
+            "movimientos": movimientos,
+        }
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        cursor.close()
+        db.close()
+
+
 # 13. ESTADÍSTICAS
 @app.get("/admin/estadisticas")
 def obtener_estadisticas():
     db = conectar()
     cursor = db.cursor(dictionary=True)
     try:
-        cursor.execute("SELECT COUNT(*) AS total FROM usuarios WHERE rol = 'Cliente' AND activo = TRUE")
-        clientes = cursor.fetchone()['total']
-
-        cursor.execute("SELECT COALESCE(SUM(monto_total), 0) AS total FROM prestamos WHERE estado = 'ACTIVO'")
-        capital_activo = float(cursor.fetchone()['total'])
-
-        cursor.execute("SELECT COALESCE(SUM(monto_total - saldo_pendiente), 0) AS total FROM prestamos")
-        recuperado = float(cursor.fetchone()['total'])
-
-        cursor.execute("SELECT COUNT(*) AS total FROM prestamos WHERE estado = 'MOROSO'")
-        morosos = cursor.fetchone()['total']
-
-        cursor.execute("SELECT COUNT(*) AS total FROM prestamos WHERE estado = 'PENDIENTE'")
-        pendientes = cursor.fetchone()['total']
+        cursor.execute("SELECT * FROM vista_dashboard LIMIT 1")
+        row = cursor.fetchone() or {}
 
         return {
-            "status":         "success",
-            "clientes":       clientes,
-            "capital_activo": capital_activo,
-            "recuperado":     recuperado,
-            "morosos":        morosos,
-            "pendientes":     pendientes
+            "total_clientes": int(row.get('total_clientes', 0) or 0),
+            "prestamos_activos": int(row.get('prestamos_activos', 0) or 0),
+            "capital_otorgado": float(row.get('capital_colocado', 0) or 0),
+            "saldo_pendiente": float(row.get('saldo_pendiente_total', 0) or 0),
+            "monto_recuperado": float(row.get('recaudacion_total', 0) or 0)
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -870,16 +1078,20 @@ def crear_empleado(request: CrearEmpleadoRequest):
         if cursor.fetchone():
             raise HTTPException(status_code=400, detail="El email ya está registrado")
 
+        rol = (request.rol or "Empleado").strip().title()
+        if rol not in ["Empleado", "Admin"]:
+            raise HTTPException(status_code=400, detail="Rol inválido. Usa 'Empleado' o 'Admin'")
+
         cursor.execute("""
             INSERT INTO usuarios (nombre, apellido_paterno, apellido_materno, email, password,
                                   rol, telefono, activo, email_verificado)
-            VALUES (%s, %s, %s, %s, %s, 'Empleado', %s, TRUE, TRUE)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, TRUE, TRUE)
         """, (request.nombre, request.apellido_paterno, request.apellido_materno,
-              request.email, request.password, request.telefono))
+              request.email, request.password, rol, request.telefono))
         db.commit()
         id_empleado = cursor.lastrowid
 
-        return {"status": "success", "message": "Empleado creado exitosamente", "id_empleado": id_empleado}
+        return {"status": "success", "message": f"{rol} creado exitosamente", "id_empleado": id_empleado}
     except HTTPException:
         raise
     except Exception as e:
@@ -958,7 +1170,9 @@ def obtener_pagos_pendientes():
         cursor.execute("""
             SELECT g.id_pago, g.id_prestamo, g.numero_pago,
                    g.fecha_vencimiento, g.monto, g.estado,
+                   p.monto_total,
                    CONCAT('MSP-', p.id_prestamo) AS folio,
+                   CONCAT(u.nombre, ' ', u.apellido_paterno, ' ', COALESCE(u.apellido_materno, '')) AS nombre_cliente,
                    u.nombre, u.apellido_paterno, u.telefono
             FROM pagos g
             JOIN prestamos p ON g.id_prestamo = p.id_prestamo
@@ -971,6 +1185,8 @@ def obtener_pagos_pendientes():
             if p.get('fecha_vencimiento') and hasattr(p['fecha_vencimiento'], 'isoformat'):
                 p['fecha_vencimiento'] = p['fecha_vencimiento'].isoformat()
             p['monto'] = float(p['monto'] or 0)
+            p['monto_total'] = float(p['monto_total'] or 0)
+            p['nombre_cliente'] = (p.get('nombre_cliente') or '').strip() or None
         return pagos
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

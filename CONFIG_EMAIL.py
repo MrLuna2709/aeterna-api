@@ -32,7 +32,7 @@ SMTP_SERVER = "smtp.gmail.com"
 SMTP_PORT = 587
 
 # Nombre del remitente
-SENDER_NAME = "Monte de Piedad"
+SENDER_NAME = "Monte sin Piedad"
 
 # ==================== FIN DE CONFIGURACIÓN ====================
 

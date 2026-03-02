@@ -968,6 +968,83 @@ def procesar_prestamo(request: AprobarPrestamoRequest):
         db.close()
 
 
+@app.get("/admin/folios")
+def obtener_folios_admin(fecha: Optional[str] = Query(None)):
+    """
+    Respuesta compatible con Android (CorteCajaResponse):
+    {
+      "status": "success",
+      "fecha": "YYYY-MM-DD",
+      "total_pagos": int,
+      "total_cobrado": float,
+      "movimientos": [
+        {
+          "id_ticket": int,
+          "folio": str,
+          "monto_pagado": float,
+          "fecha_generacion": "ISO-8601",
+          "metodo_pago": str,
+          "tipo": str,
+          "folio_prestamo": "MSP-{id}",
+          "nombre": str,
+          "apellido_paterno": str
+        }
+      ]
+    }
+    """
+    db = conectar()
+    cursor = db.cursor(dictionary=True)
+    try:
+        fecha_filtro = fecha if fecha else datetime.now().strftime("%Y-%m-%d")
+
+        cursor.execute(
+            """
+            SELECT t.id_ticket,
+                   t.folio,
+                   t.monto_pagado,
+                   t.fecha_generacion,
+                   t.metodo_pago,
+                   t.tipo,
+                   CONCAT('MSP-', p.id_prestamo) AS folio_prestamo,
+                   u.nombre,
+                   u.apellido_paterno
+            FROM tickets_pagos t
+            JOIN pagos g ON t.id_pago = g.id_pago
+            JOIN prestamos p ON g.id_prestamo = p.id_prestamo
+            JOIN usuarios u ON p.id_cliente = u.id_usuario
+            WHERE DATE(t.fecha_generacion) = %s
+              AND LOWER(t.estado) = 'activo'
+            ORDER BY t.fecha_generacion DESC
+            """,
+            (fecha_filtro,),
+        )
+
+        movimientos = cursor.fetchall()
+
+        for m in movimientos:
+            if m.get("fecha_generacion") and hasattr(m["fecha_generacion"], "isoformat"):
+                m["fecha_generacion"] = m["fecha_generacion"].isoformat()
+            m["monto_pagado"] = float(m.get("monto_pagado") or 0)
+            m["metodo_pago"] = (m.get("metodo_pago") or "").upper()
+            m["tipo"] = (m.get("tipo") or "pago").upper()
+
+        total = float(sum(m["monto_pagado"] for m in movimientos))
+
+        return {
+            "status": "success",
+            "fecha": fecha_filtro,
+            "total_pagos": len(movimientos),
+            "total_cobrado": total,
+            "movimientos": movimientos,
+        }
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        cursor.close()
+        db.close()
+
+
 # 13. ESTADÍSTICAS
 @app.get("/admin/estadisticas")
 def obtener_estadisticas():

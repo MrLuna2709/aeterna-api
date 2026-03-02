@@ -86,7 +86,7 @@ def enviar_email_resend(destinatario: str, asunto: str, html: str):
 
     url = "https://api.brevo.com/v3/smtp/email"
     payload = {
-        "sender": {"name": "Monte de Piedad", "email": "hangelica957@gmail.com"},
+        "sender": {"name": "Monte sin Piedad", "email": "hangelica957@gmail.com"},
         "to": [{"email": destinatario}],
         "subject": asunto,
         "htmlContent": html,
@@ -124,7 +124,7 @@ def email_codigo_recuperacion(destinatario: str, codigo: str, nombre: str = "Usu
         </div>
         <div style="padding:40px 30px;">
           <p style="color:#475569;line-height:1.6;">Hola <strong>{nombre}</strong>,</p>
-          <p style="color:#475569;line-height:1.6;">Recibimos una solicitud para restablecer tu contraseña en <strong>Monte de Piedad</strong>.</p>
+          <p style="color:#475569;line-height:1.6;">Recibimos una solicitud para restablecer tu contraseña en <strong>Monte sin Piedad</strong>.</p>
           <p style="color:#475569;line-height:1.6;">Usa el siguiente código de verificación:</p>
           <div style="background:#f8fafc;border:2px solid #e2e8f0;border-radius:12px;padding:30px;text-align:center;margin:30px 0;">
             <div style="font-size:40px;font-weight:900;color:#A6032F;letter-spacing:12px;font-family:'Courier New',monospace;">{codigo}</div>
@@ -136,7 +136,7 @@ def email_codigo_recuperacion(destinatario: str, codigo: str, nombre: str = "Usu
           <p style="color:#64748b;font-size:14px;line-height:1.6;margin-top:30px;">Por tu seguridad, nunca compartas este código con nadie.</p>
         </div>
         <div style="text-align:center;padding:30px;font-size:12px;color:#94a3b8;border-top:1px solid #e2e8f0;">
-          <p>© {datetime.now().year} Monte de Piedad | Sistema Seguro</p>
+          <p>© {datetime.now().year} Monte sin Piedad | Sistema Seguro</p>
           <p style="margin-top:5px;">Este es un correo automático, no respondas a esta dirección.</p>
         </div>
       </div>
@@ -157,7 +157,7 @@ def email_verificacion_cuenta(destinatario: str, codigo: str, nombre: str):
         </div>
         <div style="padding:40px 30px;">
           <p style="color:#475569;line-height:1.6;">Hola <strong>{nombre}</strong>,</p>
-          <p style="color:#475569;line-height:1.6;">¡Bienvenido a <strong>Monte de Piedad</strong>! Para completar tu registro, verifica tu email con el siguiente código:</p>
+          <p style="color:#475569;line-height:1.6;">¡Bienvenido a <strong>Monte sin Piedad</strong>! Para completar tu registro, verifica tu email con el siguiente código:</p>
           <div style="background:#f8fafc;border:2px solid #e2e8f0;border-radius:12px;padding:30px;text-align:center;margin:30px 0;">
             <div style="font-size:40px;font-weight:900;color:#10b981;letter-spacing:12px;font-family:'Courier New',monospace;">{codigo}</div>
             <div style="font-size:12px;color:#64748b;margin-top:10px;">Código de verificación</div>
@@ -167,13 +167,13 @@ def email_verificacion_cuenta(destinatario: str, codigo: str, nombre: str):
           </div>
         </div>
         <div style="text-align:center;padding:30px;font-size:12px;color:#94a3b8;border-top:1px solid #e2e8f0;">
-          <p>© {datetime.now().year} Monte de Piedad</p>
+          <p>© {datetime.now().year} Monte sin Piedad</p>
         </div>
       </div>
     </body>
     </html>
     """
-    return enviar_email_resend(destinatario, "✅ Verifica tu cuenta - Monte de Piedad", html)
+    return enviar_email_resend(destinatario, "✅ Verifica tu cuenta - Monte sin Piedad", html)
 
 def email_bienvenida(destinatario: str, nombre: str):
     html = f"""
@@ -183,7 +183,7 @@ def email_bienvenida(destinatario: str, nombre: str):
     <body style="font-family:Arial,sans-serif;background:#f1f5f9;margin:0;padding:20px;">
       <div style="max-width:500px;margin:auto;background:#fff;border-radius:16px;overflow:hidden;box-shadow:0 4px 6px rgba(0,0,0,0.1);">
         <div style="background:linear-gradient(135deg,#A6032F,#800020);padding:50px 30px;text-align:center;">
-          <h1 style="color:white;margin:0 0 10px 0;font-size:28px;">¡Bienvenido a Monte de Piedad! 🎉</h1>
+          <h1 style="color:white;margin:0 0 10px 0;font-size:28px;">¡Bienvenido a Monte sin Piedad! 🎉</h1>
           <p style="color:rgba(255,255,255,0.9);margin:0;">Tu cuenta ha sido creada exitosamente</p>
         </div>
         <div style="padding:40px 30px;">
@@ -194,13 +194,13 @@ def email_bienvenida(destinatario: str, nombre: str):
           <p style="color:#64748b;font-size:14px;line-height:1.6;margin-top:30px;">Si tienes alguna duda, nuestro equipo está disponible para asistirte.</p>
         </div>
         <div style="text-align:center;padding:30px;font-size:12px;color:#94a3b8;border-top:1px solid #e2e8f0;">
-          <p>© {datetime.now().year} Monte de Piedad | Sistema Seguro</p>
+          <p>© {datetime.now().year} Monte sin Piedad | Sistema Seguro</p>
         </div>
       </div>
     </body>
     </html>
     """
-    return enviar_email_resend(destinatario, f"🎉 ¡Bienvenido a Monte de Piedad, {nombre}!", html)
+    return enviar_email_resend(destinatario, f"🎉 ¡Bienvenido a Monte sin Piedad, {nombre}!", html)
 
 
 def enviar_email_bienvenida_background(destinatario: str, nombre: str):

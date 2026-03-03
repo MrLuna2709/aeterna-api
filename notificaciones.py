@@ -1,6 +1,6 @@
 """
 SISTEMA DE NOTIFICACIONES Y EMAILS - COMPLETO
-Monte de Piedad - Versión Final
+Monte sin Piedad - Versión Final
 """
 
 import smtplib
@@ -37,7 +37,7 @@ except ImportError:
     GMAIL_APP_PASSWORD = "xxxx"
     SMTP_SERVER = "smtp.gmail.com"
     SMTP_PORT = 587
-    SENDER_NAME = "Monte de Piedad"
+    SENDER_NAME = "Monte sin Piedad"
     EMAIL_CONFIGURED = False
 
 # ==================== SISTEMA DE EMAILS ====================
@@ -61,7 +61,7 @@ def enviar_email(destinatario, asunto, cuerpo_html):
     
     try:
         mensaje = MIMEMultipart('alternative')
-        mensaje['From'] = f"Monte de Piedad <{GMAIL_USER}>"
+        mensaje['From'] = f"Monte sin Piedad <{GMAIL_USER}>"
         mensaje['To'] = destinatario
         mensaje['Subject'] = asunto
         
@@ -175,7 +175,7 @@ def email_codigo_recuperacion(destinatario, codigo, nombre="Usuario"):
                 <p class="greeting">Hola <strong>{nombre}</strong>,</p>
                 <p style="color: #475569; line-height: 1.6;">
                     Recibimos una solicitud para restablecer la contraseña de tu cuenta en 
-                    <strong>Monte de Piedad</strong>.
+                    <strong>Monte sin Piedad</strong>.
                 </p>
                 <p style="color: #475569; line-height: 1.6;">
                     Usa el siguiente código de verificación de 6 dígitos:
@@ -195,11 +195,11 @@ def email_codigo_recuperacion(destinatario, codigo, nombre="Usuario"):
                 
                 <p style="color: #64748b; font-size: 14px; line-height: 1.6; margin-top: 30px;">
                     Por tu seguridad, nunca compartas este código con nadie. 
-                    El personal de Monte de Piedad jamás te solicitará este código.
+                    El personal de Monte sin Piedad jamás te solicitará este código.
                 </p>
             </div>
             <div class="footer">
-                <p>© {datetime.now().year} Monte de Piedad | Sistema Seguro</p>
+                <p>© {datetime.now().year} Monte sin Piedad | Sistema Seguro</p>
                 <p style="margin-top: 5px;">Este es un correo automático, no respondas a esta dirección.</p>
             </div>
         </div>
@@ -307,7 +307,7 @@ def email_bienvenida(destinatario, nombre):
     <body>
         <div class="container">
             <div class="header">
-                <h1>¡Bienvenido a Monte de Piedad! 🎉</h1>
+                <h1>¡Bienvenido a Monte sin Piedad! 🎉</h1>
                 <p>Tu cuenta ha sido creada exitosamente</p>
             </div>
             <div class="content">
@@ -316,7 +316,7 @@ def email_bienvenida(destinatario, nombre):
                 </div>
                 
                 <p style="color: #475569; line-height: 1.8; margin: 25px 0;">
-                    Tu cuenta en Monte de Piedad está lista. Ahora puedes acceder a todos nuestros servicios 
+                    Tu cuenta en Monte sin Piedad está lista. Ahora puedes acceder a todos nuestros servicios 
                     financieros diseñados para ayudarte a alcanzar tus metas.
                 </p>
                 
@@ -361,7 +361,7 @@ def email_bienvenida(destinatario, nombre):
                 </p>
             </div>
             <div class="footer">
-                <p>© {datetime.now().year} Monte de Piedad | Sistema Seguro</p>
+                <p>© {datetime.now().year} Monte sin Piedad | Sistema Seguro</p>
                 <p style="margin-top: 5px;">Este es un correo automático, no respondas a esta dirección.</p>
             </div>
         </div>
@@ -369,7 +369,7 @@ def email_bienvenida(destinatario, nombre):
     </html>
     """
     
-    asunto = f"🎉 ¡Bienvenido a Monte de Piedad, {nombre}!"
+    asunto = f"🎉 ¡Bienvenido a Monte sin Piedad, {nombre}!"
     return enviar_email(destinatario, asunto, html)
 
 
@@ -529,7 +529,7 @@ def email_ticket_pago(destinatario, folio, monto, numero_pago, total_pagos, clie
                 </p>
             </div>
             <div class="footer">
-                <p>© {datetime.now().year} Monte de Piedad | Comprobante Oficial</p>
+                <p>© {datetime.now().year} Monte sin Piedad | Comprobante Oficial</p>
                 <p style="margin-top: 5px;">Este es un correo automático, no respondas a esta dirección.</p>
             </div>
         </div>
@@ -708,7 +708,7 @@ def email_prestamo_aprobado(destinatario, nombre, monto, plazo_meses, cuota_mens
                 </p>
             </div>
             <div class="footer">
-                <p>© {datetime.now().year} Monte de Piedad | Sistema Seguro</p>
+                <p>© {datetime.now().year} Monte sin Piedad | Sistema Seguro</p>
                 <p style="margin-top: 5px;">Este es un correo automático, no respondas a esta dirección.</p>
             </div>
         </div>
@@ -822,7 +822,7 @@ def email_prestamo_rechazado(destinatario, nombre, monto):
                 </p>
             </div>
             <div class="footer">
-                <p>© {datetime.now().year} Monte de Piedad | Sistema Seguro</p>
+                <p>© {datetime.now().year} Monte sin Piedad | Sistema Seguro</p>
                 <p style="margin-top: 5px;">Este es un correo automático, no respondas a esta dirección.</p>
             </div>
         </div>
@@ -830,7 +830,7 @@ def email_prestamo_rechazado(destinatario, nombre, monto):
     </html>
     """
     
-    asunto = "Actualización de tu Solicitud - Monte de Piedad"
+    asunto = "Actualización de tu Solicitud - Monte sin Piedad"
     return enviar_email(destinatario, asunto, html)
 
 
@@ -973,7 +973,7 @@ def email_recordatorio_pago(destinatario, nombre, numero_pago, monto, fecha_venc
                 </p>
             </div>
             <div class="footer">
-                <p>© {datetime.now().year} Monte de Piedad | Sistema de Recordatorios</p>
+                <p>© {datetime.now().year} Monte sin Piedad | Sistema de Recordatorios</p>
                 <p style="margin-top: 5px;">Este es un correo automático, no respondas a esta dirección.</p>
             </div>
         </div>
@@ -1123,7 +1123,7 @@ def email_pago_vencido(destinatario, nombre, numero_pago, monto, dias_atraso):
                 </p>
             </div>
             <div class="footer">
-                <p>© {datetime.now().year} Monte de Piedad | Sistema de Alertas</p>
+                <p>© {datetime.now().year} Monte sin Piedad | Sistema de Alertas</p>
                 <p style="margin-top: 5px;">Este es un correo automático, no respondas a esta dirección.</p>
             </div>
         </div>
@@ -1325,7 +1325,7 @@ def email_prestamo_liquidado(destinatario, nombre, monto_original, descuento, to
                 </p>
             </div>
             <div class="footer">
-                <p>© {datetime.now().year} Monte de Piedad | Comprobante de Liquidación</p>
+                <p>© {datetime.now().year} Monte sin Piedad | Comprobante de Liquidación</p>
                 <p style="margin-top: 5px;">Este es un correo automático, no respondas a esta dirección.</p>
             </div>
         </div>
@@ -1333,7 +1333,7 @@ def email_prestamo_liquidado(destinatario, nombre, monto_original, descuento, to
     </html>
     """
     
-    asunto = "🎊 ¡Felicidades! Préstamo Liquidado - Monte de Piedad"
+    asunto = "🎊 ¡Felicidades! Préstamo Liquidado - Monte sin Piedad"
     return enviar_email(destinatario, asunto, html)
 
 

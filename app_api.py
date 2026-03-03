@@ -878,7 +878,7 @@ def registrar_pago_cliente(request: RegistrarPagoClienteRequest):
                 (id_prestamo,)
             )
 
-        # 8. Generar ticket (id_empleado = NULL porque lo paga el cliente)
+        # 8. Generar ticket (id_empleado = 0 como centinela de autopago cliente)
         import hashlib, time
         folio = f"TC-{request.id_pago}-{int(time.time())}"
         firma = hashlib.sha256(f"{request.id_pago}{monto}{time.time()}".encode()).hexdigest()[:64]
@@ -887,7 +887,7 @@ def registrar_pago_cliente(request: RegistrarPagoClienteRequest):
             INSERT INTO tickets_pagos
                 (folio, id_pago, id_empleado, metodo_pago, monto_pagado,
                  fecha_generacion, firma_digital, estado, tipo)
-            VALUES (%s, %s, NULL, %s, %s, NOW(), %s, 'ACTIVO', 'PAGO')
+            VALUES (%s, %s, 0, %s, %s, NOW(), %s, 'ACTIVO', 'PAGO')
         """, (folio, request.id_pago, metodo, monto, firma))
 
         db.commit()

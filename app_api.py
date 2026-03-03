@@ -956,7 +956,7 @@ def actualizar_configuracion(id_config: int, request: ConfiguracionRequest):
             raise HTTPException(status_code=400, detail="No se enviaron campos para actualizar")
 
         campos.append("fecha_actualizacion = NOW()")
-        query = f"UPDATE configuracion_sistema SET {', '.join(campos)} WHERE id_config = %s"
+        query = f"UPDATE configuracion_sistema SET {', '.join(campos)} WHERE id = %s"
         valores.append(id_config)
 
         cursor.execute(query, tuple(valores))

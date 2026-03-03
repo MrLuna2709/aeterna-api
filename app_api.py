@@ -626,7 +626,6 @@ class CrearEmpleadoRequest(BaseModel):
 
 class RegistrarPagoRequest(BaseModel):
     id_pago: int
-    id_empleado: int
 
 class RegistrarPagoClienteRequest(BaseModel):
     id_pago: int
@@ -878,16 +877,16 @@ def registrar_pago_cliente(request: RegistrarPagoClienteRequest):
                 (id_prestamo,)
             )
 
-        # 8. Generar ticket (id_empleado = 0 como centinela de autopago cliente)
+        # 8. Generar ticket (autopago cliente)
         import hashlib, time
         folio = f"TC-{request.id_pago}-{int(time.time())}"
         firma = hashlib.sha256(f"{request.id_pago}{monto}{time.time()}".encode()).hexdigest()[:64]
         metodo = (request.metodo_pago or "EFECTIVO").upper()
         cursor.execute("""
             INSERT INTO tickets_pagos
-                (folio, id_pago, id_empleado, metodo_pago, monto_pagado,
+                (folio, id_pago, metodo_pago, monto_pagado,
                  fecha_generacion, firma_digital, estado, tipo)
-            VALUES (%s, %s, 0, %s, %s, NOW(), %s, 'ACTIVO', 'PAGO')
+            VALUES (%s, %s, %s, %s, NOW(), %s, 'ACTIVO', 'PAGO')
         """, (folio, request.id_pago, metodo, monto, firma))
 
         db.commit()
@@ -1237,9 +1236,9 @@ def registrar_pago(request: RegistrarPagoRequest):
         liquidado = float(row['saldo_pendiente']) == 0 if row else False
         cursor.execute("""
             INSERT INTO tickets_pagos 
-                (folio, id_pago, id_empleado, metodo_pago, monto_pagado, fecha_generacion, firma_digital, estado, tipo)
-            VALUES (%s, %s, %s, 'EFECTIVO', %s, NOW(), %s, 'ACTIVO', %s)
-        """, (folio, request.id_pago, request.id_empleado, monto, firma,
+                (folio, id_pago, metodo_pago, monto_pagado, fecha_generacion, firma_digital, estado, tipo)
+            VALUES (%s, %s, 'EFECTIVO', %s, NOW(), %s, 'ACTIVO', %s)
+        """, (folio, request.id_pago, monto, firma,
               'LIQUIDACION' if liquidado else 'PAGO'))
 
         db.commit()

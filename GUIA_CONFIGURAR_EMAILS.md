@@ -39,7 +39,7 @@ Para que el sistema de notificaciones funcione, necesitas configurar TU PROPIO e
 2. Inicia sesión con tu cuenta de Gmail
 3. En "Seleccionar app" → Elige **"Correo"**
 4. En "Seleccionar dispositivo" → Elige **"Otro (nombre personalizado)"**
-5. Escribe: **"Monte de Piedad"**
+5. Escribe: **"Monte sin Piedad"**
 6. Click **"Generar"**
 
 Google te mostrará una contraseña de 16 caracteres:

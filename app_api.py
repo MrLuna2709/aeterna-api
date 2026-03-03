@@ -628,6 +628,11 @@ class RegistrarPagoRequest(BaseModel):
     id_pago: int
     id_empleado: int
 
+class RegistrarPagoClienteRequest(BaseModel):
+    id_pago: int
+    id_cliente: int
+    metodo_pago: Optional[str] = "EFECTIVO"
+
 class ConfiguracionRequest(BaseModel):
     tasa_interes: Optional[float] = None
     plazo_maximo: Optional[int] = None
@@ -804,6 +809,99 @@ def obtener_pagos(id_prestamo: int, id_cliente_path: Optional[int] = None):
             p['monto'] = float(p['monto'] or 0)
         return pagos
     except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        cursor.close()
+        db.close()
+
+
+@app.post("/cliente/registrar_pago")
+def registrar_pago_cliente(request: RegistrarPagoClienteRequest):
+    db = conectar()
+    cursor = db.cursor(dictionary=True)
+    try:
+        # 1. Verificar que el pago existe
+        cursor.execute("SELECT * FROM pagos WHERE id_pago = %s", (request.id_pago,))
+        pago = cursor.fetchone()
+        if not pago:
+            raise HTTPException(status_code=404, detail="Pago no encontrado")
+
+        # 2. Verificar que el pago pertenece al cliente (seguridad)
+        id_prestamo = pago['id_prestamo']
+        cursor.execute(
+            "SELECT id_cliente FROM prestamos WHERE id_prestamo = %s",
+            (id_prestamo,)
+        )
+        prestamo = cursor.fetchone()
+        if not prestamo or prestamo['id_cliente'] != request.id_cliente:
+            raise HTTPException(status_code=403, detail="No tienes permiso para pagar este préstamo")
+
+        # 3. Verificar que no esté ya pagado
+        if pago['estado'] == 'pagado':
+            raise HTTPException(status_code=400, detail="Este pago ya fue registrado")
+
+        # 4. Solo mensualidades — bloquear liquidación total desde cliente
+        cursor.execute(
+            "SELECT COUNT(*) AS pendientes FROM pagos WHERE id_prestamo = %s AND estado != 'pagado'",
+            (id_prestamo,)
+        )
+        pendientes = int(cursor.fetchone().get('pendientes', 0) or 0)
+        if pendientes == 1:
+            raise HTTPException(
+                status_code=403,
+                detail="La liquidación total solo puede realizarla un empleado"
+            )
+
+        monto = float(pago['monto'])
+
+        # 5. Marcar pago como pagado
+        cursor.execute(
+            "UPDATE pagos SET estado='pagado', fecha_pago=NOW() WHERE id_pago = %s",
+            (request.id_pago,)
+        )
+
+        # 6. Reducir saldo del préstamo
+        cursor.execute(
+            "UPDATE prestamos SET saldo_pendiente = GREATEST(0, saldo_pendiente - %s) WHERE id_prestamo = %s",
+            (monto, id_prestamo)
+        )
+
+        # 7. Verificar si quedó liquidado
+        cursor.execute(
+            "SELECT saldo_pendiente FROM prestamos WHERE id_prestamo = %s",
+            (id_prestamo,)
+        )
+        row = cursor.fetchone()
+        if row and float(row['saldo_pendiente']) == 0:
+            cursor.execute(
+                "UPDATE prestamos SET estado='LIQUIDADO' WHERE id_prestamo = %s",
+                (id_prestamo,)
+            )
+
+        # 8. Generar ticket (id_empleado = NULL porque lo paga el cliente)
+        import hashlib, time
+        folio = f"TC-{request.id_pago}-{int(time.time())}"
+        firma = hashlib.sha256(f"{request.id_pago}{monto}{time.time()}".encode()).hexdigest()[:64]
+        metodo = (request.metodo_pago or "EFECTIVO").upper()
+        cursor.execute("""
+            INSERT INTO tickets_pagos
+                (folio, id_pago, id_empleado, metodo_pago, monto_pagado,
+                 fecha_generacion, firma_digital, estado, tipo)
+            VALUES (%s, %s, NULL, %s, %s, NOW(), %s, 'ACTIVO', 'PAGO')
+        """, (folio, request.id_pago, metodo, monto, firma))
+
+        db.commit()
+        return {
+            "status": "success",
+            "message": f"Pago #{pago['numero_pago']} registrado exitosamente",
+            "monto": monto,
+            "id_prestamo": id_prestamo
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
         raise HTTPException(status_code=500, detail=str(e))
     finally:
         cursor.close()

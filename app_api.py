@@ -913,7 +913,7 @@ def obtener_configuracion():
     db = conectar()
     cursor = db.cursor(dictionary=True)
     try:
-        cursor.execute("SELECT * FROM configuracion_sistema ORDER BY id_config ASC")
+        cursor.execute("SELECT * FROM configuracion_sistema ORDER BY id ASC")
         config = cursor.fetchall()
         for row in config:
             row['tasa_interes'] = float(row.get('tasa_interes', 0) or 0)

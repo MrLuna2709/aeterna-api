@@ -850,9 +850,19 @@ def obtener_pagos(id_prestamo: int, id_cliente_path: Optional[int] = None):
         db.close()
 
 
+# ══════════════════════════════════════════════════════════════════════
+# REEMPLAZA el endpoint /cliente/registrar_pago en main.py
+# Fixes:
+#   1. El bloqueo de "último pago" se eliminó — el cliente SÍ puede
+#      pagar el último, la separación ya existe por tener dos endpoints
+#      distintos (/cliente vs /empleado)
+#   2. Liquidación por conteo de pendientes (no por saldo == 0)
+#      para evitar el bug de decimales residuales
+# ══════════════════════════════════════════════════════════════════════
+
 @app.post("/cliente/registrar_pago")
 def registrar_pago_cliente(request: RegistrarPagoClienteRequest):
-    db = conectar()
+    db     = conectar()
     cursor = db.cursor(dictionary=True)
     try:
         # 1. Verificar que el pago existe
@@ -861,11 +871,10 @@ def registrar_pago_cliente(request: RegistrarPagoClienteRequest):
         if not pago:
             raise HTTPException(status_code=404, detail="Pago no encontrado")
 
-        # 2. Verificar que el pago pertenece al cliente (seguridad)
+        # 2. Verificar que pertenece al cliente (seguridad)
         id_prestamo = pago['id_prestamo']
         cursor.execute(
-            "SELECT id_cliente FROM prestamos WHERE id_prestamo = %s",
-            (id_prestamo,)
+            "SELECT id_cliente FROM prestamos WHERE id_prestamo = %s", (id_prestamo,)
         )
         prestamo = cursor.fetchone()
         if not prestamo or prestamo['id_cliente'] != request.id_cliente:
@@ -875,62 +884,56 @@ def registrar_pago_cliente(request: RegistrarPagoClienteRequest):
         if pago['estado'] == 'pagado':
             raise HTTPException(status_code=400, detail="Este pago ya fue registrado")
 
-        # 4. Solo mensualidades — bloquear liquidación total desde cliente
-        cursor.execute(
-            "SELECT COUNT(*) AS pendientes FROM pagos WHERE id_prestamo = %s AND estado != 'pagado'",
-            (id_prestamo,)
-        )
-        pendientes = int(cursor.fetchone().get('pendientes', 0) or 0)
-        if pendientes == 1:
-            raise HTTPException(
-                status_code=403,
-                detail="La liquidación total solo puede realizarla un empleado"
-            )
-
         monto = float(pago['monto'])
 
-        # 5. Marcar pago como pagado
+        # 4. Marcar pago como pagado
         cursor.execute(
             "UPDATE pagos SET estado='pagado', fecha_pago=NOW() WHERE id_pago = %s",
             (request.id_pago,)
         )
 
-        # 6. Reducir saldo del préstamo
+        # 5. Reducir saldo del préstamo
         cursor.execute(
             "UPDATE prestamos SET saldo_pendiente = GREATEST(0, saldo_pendiente - %s) WHERE id_prestamo = %s",
             (monto, id_prestamo)
         )
 
-        # 7. Verificar si quedó liquidado
+        # 6. Liquidar cuando ya NO queden pagos pendientes (conteo, no saldo)
         cursor.execute(
-            "SELECT saldo_pendiente FROM prestamos WHERE id_prestamo = %s",
+            "SELECT COUNT(*) AS pendientes FROM pagos WHERE id_prestamo = %s AND estado = 'pendiente'",
             (id_prestamo,)
         )
-        row = cursor.fetchone()
-        if row and float(row['saldo_pendiente']) == 0:
+        liquidado = int(cursor.fetchone().get('pendientes', 0) or 0) == 0
+
+        if liquidado:
             cursor.execute(
-                "UPDATE prestamos SET estado='LIQUIDADO' WHERE id_prestamo = %s",
+                "UPDATE prestamos SET estado='LIQUIDADO', saldo_pendiente=0 WHERE id_prestamo = %s",
                 (id_prestamo,)
             )
 
-        # 8. Generar ticket (autopago cliente)
+        # 7. Generar ticket
         import hashlib, time
         folio = f"TC-{request.id_pago}-{int(time.time())}"
-        firma = hashlib.sha256(f"{request.id_pago}{monto}{time.time()}".encode()).hexdigest()[:64]
+        firma = hashlib.sha256(
+            f"{request.id_pago}{monto}{time.time()}".encode()
+        ).hexdigest()[:64]
         metodo = (request.metodo_pago or "EFECTIVO").upper()
+
         cursor.execute("""
             INSERT INTO tickets_pagos
                 (folio, id_pago, metodo_pago, monto_pagado,
                  fecha_generacion, firma_digital, estado, tipo)
-            VALUES (%s, %s, %s, %s, NOW(), %s, 'ACTIVO', 'PAGO')
-        """, (folio, request.id_pago, metodo, monto, firma))
+            VALUES (%s, %s, %s, %s, NOW(), %s, 'ACTIVO', %s)
+        """, (folio, request.id_pago, metodo, monto, firma,
+              'LIQUIDACION' if liquidado else 'PAGO'))
 
         db.commit()
         return {
-            "status": "success",
-            "message": f"Pago #{pago['numero_pago']} registrado exitosamente",
-            "monto": monto,
-            "id_prestamo": id_prestamo
+            "status":      "success",
+            "message":     f"Pago #{pago['numero_pago']} registrado exitosamente",
+            "monto":       monto,
+            "id_prestamo": id_prestamo,
+            "liquidado":   liquidado
         }
 
     except HTTPException:

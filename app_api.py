@@ -644,35 +644,71 @@ class ConfiguracionRequest(BaseModel):
 @app.post("/cliente/prestamo")
 @app.post("/cliente/solicitar_credito")
 def solicitar_prestamo(request: PrestamoRequest):
-    TASA = 0.05
-    if request.monto < 1000 or request.monto > 50000:
-        raise HTTPException(status_code=400, detail="Monto debe estar entre $1,000 y $50,000")
-    if request.plazo_meses not in [6, 12, 24, 36, 48]:
-        raise HTTPException(status_code=400, detail="Plazo inválido. Opciones: 6, 12, 24, 36, 48 meses")
-
     db = conectar()
     cursor = db.cursor(dictionary=True)
     try:
-        cursor.execute("SELECT id_usuario, rol FROM usuarios WHERE id_usuario = %s", (request.id_cliente,))
-        u = cursor.fetchone()
-        if not u:
+        # Leer configuración activa
+        cursor.execute("""
+            SELECT tasa_interes, plazo_maximo, monto_minimo, monto_maximo
+            FROM configuracion_sistema
+            ORDER BY id ASC
+            LIMIT 1
+        """)
+        cfg = cursor.fetchone()
+        if not cfg:
+            raise HTTPException(status_code=500, detail="No hay configuración del sistema")
+
+        tasa = float(cfg['tasa_interes'])
+        plazo_max = int(cfg['plazo_maximo'])
+        monto_min = float(cfg['monto_minimo'])
+        monto_max = float(cfg['monto_maximo'])
+
+        # Validaciones dinámicas
+        if request.monto < monto_min or request.monto > monto_max:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Monto debe estar entre ${monto_min:,.0f} y ${monto_max:,.0f}"
+            )
+
+        plazos_validos = [p for p in [6, 12, 24, 36, 48] if p <= plazo_max]
+        if request.plazo_meses not in plazos_validos:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Plazo inválido. Opciones disponibles: {plazos_validos}"
+            )
+
+        # Verificar cliente
+        cursor.execute("SELECT id_usuario FROM usuarios WHERE id_usuario = %s", (request.id_cliente,))
+        if not cursor.fetchone():
             raise HTTPException(status_code=404, detail="Cliente no encontrado")
 
         cursor.execute("SELECT id_prestamo FROM prestamos WHERE id_cliente = %s AND estado = 'PENDIENTE'", (request.id_cliente,))
         if cursor.fetchone():
             raise HTTPException(status_code=400, detail="Ya tienes una solicitud pendiente")
 
+        # Cálculo amortización francesa
+        capital = request.monto
         plazo = request.plazo_meses
-        cuota = request.monto * (TASA * (1 + TASA)**plazo) / ((1 + TASA)**plazo - 1)
-        saldo = round(cuota * plazo, 2)
+        cuota = capital * (tasa * (1 + tasa)**plazo) / ((1 + tasa)**plazo - 1)
+
+        cuota_redondeada = round(cuota, 2)
+        total_sin_ultimo = cuota_redondeada * (plazo - 1)
+        saldo_total = round(cuota * plazo, 2)
+        ultimo_pago = round(saldo_total - total_sin_ultimo, 2)
 
         cursor.execute("""
             INSERT INTO prestamos (id_cliente, monto_total, saldo_pendiente, tasa_interes, plazo_meses, estado, fecha_creacion)
             VALUES (%s, %s, %s, %s, %s, 'PENDIENTE', NOW())
-        """, (request.id_cliente, request.monto, saldo, TASA, plazo))
+        """, (request.id_cliente, saldo_total, saldo_total, tasa, plazo))
         db.commit()
 
-        return {"status": "success", "message": "Solicitud enviada. Un empleado la revisará pronto."}
+        return {
+            "status": "success",
+            "message": "Solicitud enviada. Un empleado la revisará pronto.",
+            "cuota_mensual": cuota_redondeada,
+            "total_a_pagar": saldo_total,
+            "tasa_mensual": tasa
+        }
     except HTTPException:
         raise
     except Exception as e:
@@ -838,6 +874,18 @@ def registrar_pago_cliente(request: RegistrarPagoClienteRequest):
         # 3. Verificar que no esté ya pagado
         if pago['estado'] == 'pagado':
             raise HTTPException(status_code=400, detail="Este pago ya fue registrado")
+
+        # 4. Solo mensualidades — bloquear liquidación total desde cliente
+        cursor.execute(
+            "SELECT COUNT(*) AS pendientes FROM pagos WHERE id_prestamo = %s AND estado != 'pagado'",
+            (id_prestamo,)
+        )
+        pendientes = int(cursor.fetchone().get('pendientes', 0) or 0)
+        if pendientes == 1:
+            raise HTTPException(
+                status_code=403,
+                detail="La liquidación total solo puede realizarla un empleado"
+            )
 
         monto = float(pago['monto'])
 
@@ -1017,24 +1065,38 @@ def procesar_prestamo(request: AprobarPrestamoRequest):
             capital = float(prestamo['monto_total'])
             plazo   = int(prestamo['plazo_meses'])
             tasa    = float(prestamo['tasa_interes'])
-            cuota   = capital * (tasa * (1 + tasa)**plazo) / ((1 + tasa)**plazo - 1)
-            saldo   = round(cuota * plazo, 2)
+
+            # Amortización francesa
+            cuota = capital * (tasa * (1 + tasa)**plazo) / ((1 + tasa)**plazo - 1)
+            cuota_normal = round(cuota, 2)
+            total_sin_ult = cuota_normal * (plazo - 1)
+            saldo_total = round(cuota * plazo, 2)
+            ultimo_pago = round(saldo_total - total_sin_ult, 2)
             hoy     = date.today()
 
             cursor.execute("""
-                UPDATE prestamos SET estado='ACTIVO', saldo_pendiente=%s,
-                fecha_aprobacion=NOW(), id_aprobador=%s WHERE id_prestamo=%s
-            """, (saldo, request.id_empleado, request.id_prestamo))
+                UPDATE prestamos
+                SET estado='ACTIVO', monto_total=%s, saldo_pendiente=%s,
+                    fecha_aprobacion=NOW(), id_aprobador=%s
+                WHERE id_prestamo=%s
+            """, (saldo_total, saldo_total, request.id_empleado, request.id_prestamo))
 
             for i in range(1, plazo + 1):
                 fecha_venc = hoy + timedelta(days=30 * i)
+                monto_pago = ultimo_pago if i == plazo else cuota_normal
                 cursor.execute("""
                     INSERT INTO pagos (id_prestamo, numero_pago, fecha_vencimiento, monto, estado)
                     VALUES (%s, %s, %s, %s, 'pendiente')
-                """, (request.id_prestamo, i, fecha_venc, round(cuota, 2)))
+                """, (request.id_prestamo, i, fecha_venc, monto_pago))
 
             db.commit()
-            return {"status": "success", "message": f"Préstamo aprobado. Se generaron {plazo} pagos."}
+            return {
+                "status": "success",
+                "message": f"Préstamo aprobado. Se generaron {plazo} pagos.",
+                "cuota_mensual": cuota_normal,
+                "ultimo_pago": ultimo_pago,
+                "total_a_pagar": saldo_total
+            }
         else:
             cursor.execute(
                 "UPDATE prestamos SET estado='RECHAZADO', id_aprobador=%s WHERE id_prestamo=%s",
@@ -1211,22 +1273,29 @@ def registrar_pago(request: RegistrarPagoRequest):
             WHERE id_prestamo = %s
         """, (monto, id_prestamo))
 
-        # Verificar si se liquidó
-        cursor.execute("SELECT saldo_pendiente FROM prestamos WHERE id_prestamo = %s", (id_prestamo,))
+        # Liquidar cuando ya no queden pagos pendientes
+        cursor.execute("""
+            SELECT COUNT(*) AS pendientes
+            FROM pagos
+            WHERE id_prestamo = %s AND estado = 'pendiente'
+        """, (id_prestamo,))
         row = cursor.fetchone()
-        if row and float(row['saldo_pendiente']) == 0:
-            cursor.execute("UPDATE prestamos SET estado='LIQUIDADO' WHERE id_prestamo=%s", (id_prestamo,))
+        liquidado = int(row.get('pendientes', 0) or 0) == 0
+        if liquidado:
+            cursor.execute(
+                "UPDATE prestamos SET estado='LIQUIDADO', saldo_pendiente=0 WHERE id_prestamo=%s",
+                (id_prestamo,)
+            )
 
         # Guardar en tickets_pagos con columnas reales
         import hashlib, time
         folio = f"T-{request.id_pago}-{int(time.time())}"
         firma = hashlib.sha256(f"{request.id_pago}{monto}{time.time()}".encode()).hexdigest()[:64]
-        liquidado = float(row['saldo_pendiente']) == 0 if row else False
         cursor.execute("""
             INSERT INTO tickets_pagos 
-                (folio, id_pago, metodo_pago, monto_pagado, fecha_generacion, firma_digital, estado, tipo)
-            VALUES (%s, %s, 'EFECTIVO', %s, NOW(), %s, 'ACTIVO', %s)
-        """, (folio, request.id_pago, monto, firma,
+                (folio, id_pago, id_empleado, metodo_pago, monto_pagado, fecha_generacion, firma_digital, estado, tipo)
+            VALUES (%s, %s, %s, 'EFECTIVO', %s, NOW(), %s, 'ACTIVO', %s)
+        """, (folio, request.id_pago, request.id_empleado, monto, firma,
               'LIQUIDACION' if liquidado else 'PAGO'))
 
         db.commit()
@@ -1234,7 +1303,8 @@ def registrar_pago(request: RegistrarPagoRequest):
             "status":      "success",
             "message":     f"Pago #{pago['numero_pago']} registrado exitosamente",
             "monto":       monto,
-            "id_prestamo": id_prestamo
+            "id_prestamo": id_prestamo,
+            "liquidado":   liquidado
         }
     except HTTPException:
         raise

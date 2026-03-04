@@ -839,18 +839,6 @@ def registrar_pago_cliente(request: RegistrarPagoClienteRequest):
         if pago['estado'] == 'pagado':
             raise HTTPException(status_code=400, detail="Este pago ya fue registrado")
 
-        # 4. Solo mensualidades — bloquear liquidación total desde cliente
-        cursor.execute(
-            "SELECT COUNT(*) AS pendientes FROM pagos WHERE id_prestamo = %s AND estado != 'pagado'",
-            (id_prestamo,)
-        )
-        pendientes = int(cursor.fetchone().get('pendientes', 0) or 0)
-        if pendientes == 1:
-            raise HTTPException(
-                status_code=403,
-                detail="La liquidación total solo puede realizarla un empleado"
-            )
-
         monto = float(pago['monto'])
 
         # 5. Marcar pago como pagado

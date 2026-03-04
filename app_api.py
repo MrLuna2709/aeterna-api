@@ -1249,19 +1249,20 @@ def registrar_pago(request: RegistrarPagoRequest):
 # 16. PAGOS PENDIENTES
 @app.get("/empleado/pagos_pendientes")
 def obtener_pagos_pendientes():
-    db = conectar()
+    db     = conectar()
     cursor = db.cursor(dictionary=True)
     try:
         cursor.execute("""
             SELECT g.id_pago, g.id_prestamo, g.numero_pago,
                    g.fecha_vencimiento, g.monto, g.estado,
-                   p.monto_total,
+                   p.monto_total, p.estado AS estado_prestamo,
                    CONCAT('MSP-', p.id_prestamo) AS folio,
-                   CONCAT(u.nombre, ' ', u.apellido_paterno, ' ', COALESCE(u.apellido_materno, '')) AS nombre_cliente,
-                   u.nombre, u.apellido_paterno, u.telefono
+                   CONCAT(u.nombre, ' ', u.apellido_paterno, ' ',
+                          COALESCE(u.apellido_materno, '')) AS nombre_cliente,
+                   u.nombre, u.apellido_paterno, u.telefono, u.curp
             FROM pagos g
             JOIN prestamos p ON g.id_prestamo = p.id_prestamo
-            JOIN usuarios u ON p.id_cliente = u.id_usuario
+            JOIN usuarios u  ON p.id_cliente  = u.id_usuario
             WHERE g.estado = 'pendiente' AND p.estado IN ('ACTIVO', 'MOROSO')
             ORDER BY g.fecha_vencimiento ASC
         """)
@@ -1269,7 +1270,7 @@ def obtener_pagos_pendientes():
         for p in pagos:
             if p.get('fecha_vencimiento') and hasattr(p['fecha_vencimiento'], 'isoformat'):
                 p['fecha_vencimiento'] = p['fecha_vencimiento'].isoformat()
-            p['monto'] = float(p['monto'] or 0)
+            p['monto']       = float(p['monto']       or 0)
             p['monto_total'] = float(p['monto_total'] or 0)
             p['nombre_cliente'] = (p.get('nombre_cliente') or '').strip() or None
         return pagos
@@ -1278,7 +1279,6 @@ def obtener_pagos_pendientes():
     finally:
         cursor.close()
         db.close()
-
 
 # 17. CORTE DE CAJA
 @app.get("/empleado/corte_caja")

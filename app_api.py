@@ -636,7 +636,11 @@ def solicitar_prestamo(request: PrestamoRequest):
             INSERT INTO prestamos
                 (id_cliente, monto_total, saldo_pendiente, tasa_interes, plazo_meses, estado, fecha_creacion)
             VALUES (%s, %s, %s, %s, %s, 'PENDIENTE', NOW())
-        """, (request.id_cliente, saldo_total, saldo_total, tasa, plazo))
+        """, (request.id_cliente,
+              capital,      # ← monto_total = CAPITAL (lo que se presta), NO el total con intereses
+              saldo_total,  # ← saldo_pendiente = total a pagar (capital + intereses)
+              tasa, plazo))
+
         db.commit()
 
         return {

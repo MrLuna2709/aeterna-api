@@ -595,6 +595,36 @@ def solicitar_prestamo(request: PrestamoRequest):
         if cursor.fetchone():
             raise HTTPException(status_code=400, detail="Ya tienes una solicitud pendiente")
 
+        cursor.execute("""
+            SELECT COUNT(*) AS activos
+            FROM prestamos
+            WHERE id_cliente = %s AND estado IN ('ACTIVO', 'MOROSO', 'PENDIENTE')
+        """, (request.id_cliente,))
+        if int(cursor.fetchone().get('activos', 0) or 0) >= 4:
+            raise HTTPException(status_code=403,
+                detail="Tienes 4 créditos activos. Liquida alguno para solicitar uno nuevo.")
+
+        # ── Límite: préstamo más reciente ≥ 50% pagado ─────────
+        cursor.execute("""
+            SELECT p.plazo_meses,
+                   COUNT(g.id_pago) AS pagados
+            FROM prestamos p
+            LEFT JOIN pagos g
+                   ON g.id_prestamo = p.id_prestamo AND g.estado = 'pagado'
+            WHERE p.id_cliente = %s AND p.estado IN ('ACTIVO', 'MOROSO')
+            GROUP BY p.id_prestamo, p.plazo_meses
+            ORDER BY p.fecha_aprobacion DESC
+            LIMIT 1
+        """, (request.id_cliente,))
+        rec = cursor.fetchone()
+        if rec:
+            pagados = int(rec['pagados'] or 0)
+            plazo   = int(rec['plazo_meses'] or 1)
+            if pagados < plazo / 2:
+                raise HTTPException(status_code=403,
+                    detail=f"Debes pagar al menos el 50% de tu préstamo activo "
+                           f"({pagados}/{plazo} pagos realizados) para solicitar uno nuevo.")
+
         capital = request.monto
         plazo   = request.plazo_meses
         cuota   = capital * (tasa * (1 + tasa)**plazo) / ((1 + tasa)**plazo - 1)
@@ -770,6 +800,18 @@ def registrar_pago_cliente(request: RegistrarPagoClienteRequest):
         # 3. No repetir pagos
         if pago['estado'] == 'pagado':
             raise HTTPException(status_code=400, detail="Este pago ya fue registrado")
+        
+        # ── Orden secuencial: bloquear si hay mensualidades anteriores sin pagar ──
+        cursor.execute("""
+            SELECT COUNT(*) AS bloqueantes
+            FROM pagos
+            WHERE id_prestamo = %s
+              AND numero_pago  < %s
+              AND estado      != 'pagado'
+        """, (id_prestamo, pago['numero_pago']))
+        if int(cursor.fetchone().get('bloqueantes', 0) or 0) > 0:
+            raise HTTPException(status_code=403,
+                detail="Debes pagar las mensualidades anteriores primero.")
 
         monto = float(pago['monto'])
 
@@ -1308,7 +1350,65 @@ def buscar_ticket(folio: str):
         cursor.close()
         db.close()
 
+@app.get("/cliente/{id_cliente}/elegibilidad")
+def verificar_elegibilidad(id_cliente: int):
+    """
+    Consultado por la app Android al entrar a la pantalla de solicitud
+    y cada vez que vuelve al foco (Lifecycle.RESUMED).
+    Si puede_solicitar=false la pantalla muestra bloqueo y no permite operar.
+    """
+    db     = conectar()
+    cursor = db.cursor(dictionary=True)
+    try:
+        cursor.execute("""
+            SELECT COUNT(*) AS activos
+            FROM prestamos
+            WHERE id_cliente = %s AND estado IN ('ACTIVO', 'MOROSO', 'PENDIENTE')
+        """, (id_cliente,))
+        activos = int(cursor.fetchone().get('activos', 0) or 0)
 
+        if activos >= 4:
+            return {
+                "puede_solicitar": False,
+                "motivo": "Tienes 4 créditos activos. Liquida alguno para solicitar uno nuevo.",
+                "pagos_realizados": None,
+                "plazo_meses": None
+            }
+
+        cursor.execute("""
+            SELECT p.plazo_meses,
+                   COUNT(g.id_pago) AS pagados
+            FROM prestamos p
+            LEFT JOIN pagos g
+                   ON g.id_prestamo = p.id_prestamo AND g.estado = 'pagado'
+            WHERE p.id_cliente = %s AND p.estado IN ('ACTIVO', 'MOROSO')
+            GROUP BY p.id_prestamo, p.plazo_meses
+            ORDER BY p.fecha_aprobacion DESC
+            LIMIT 1
+        """, (id_cliente,))
+        rec = cursor.fetchone()
+
+        if rec:
+            pagados = int(rec['pagados'] or 0)
+            plazo   = int(rec['plazo_meses'] or 1)
+            if pagados < plazo / 2:
+                return {
+                    "puede_solicitar": False,
+                    "motivo": f"Debes pagar al menos el 50% de tu préstamo activo "
+                              f"({pagados} de {plazo} pagos realizados).",
+                    "pagos_realizados": pagados,
+                    "plazo_meses": plazo
+                }
+
+        return {"puede_solicitar": True, "motivo": None,
+                "pagos_realizados": None, "plazo_meses": None}
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        cursor.close()
+        db.close()
+        
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)

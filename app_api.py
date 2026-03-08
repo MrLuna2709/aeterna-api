@@ -1531,6 +1531,7 @@ def crear_orden_paypal(request: PaypalOrdenRequest):
             },
             timeout=15
         )
+        print(f"PAYPAL ORDEN → status={orden_response.status_code} body={orden_response.text}")
 
         if orden_response.status_code not in (200, 201):
             raise HTTPException(status_code=502,

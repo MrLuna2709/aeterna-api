@@ -1561,7 +1561,17 @@ def crear_orden_paypal(request: PaypalOrdenRequest):
         cursor.close()
         db.close()
 
-
+def _paypal_access_token() -> str:
+    response = http_requests.post(
+        f"{PAYPAL_BASE}/v1/oauth2/token",
+        auth=(PAYPAL_CLIENT_ID, PAYPAL_SECRET),
+        data={"grant_type": "client_credentials"},
+        headers={"Accept": "application/json"},
+        timeout=10
+    )
+    print(f"PAYPAL AUTH → status={response.status_code} body={response.text}")  # ← agregar
+    if response.status_code != 200:
+        raise HTTPException(...)
 # ══════════════════════════════════════════════════════════════════
 # ENDPOINT 2 — Capturar pago
 #

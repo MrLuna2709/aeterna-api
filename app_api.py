@@ -1576,6 +1576,284 @@ def verificar_elegibilidad(id_cliente: int):
         db.close()
 
 
+# ══════════════════════════════════════════════════════════════════
+# PAYPAL — SANDBOX
+# Agregar al final de main.py, antes del if __name__ == "__main__"
+#
+# Variables de entorno a agregar en Railway:
+#   PAYPAL_CLIENT_ID     → tu Client ID de sandbox
+#   PAYPAL_SECRET        → tu Secret Key de sandbox
+#   PAYPAL_RETURN_URL    → com.moon.casaprestamo://paypalpay
+#   PAYPAL_CANCEL_URL    → com.moon.casaprestamo://paypalpay/cancel
+#   PAYPAL_MODE          → sandbox   (cambiar a "live" cuando vayas a producción)
+# ══════════════════════════════════════════════════════════════════
+
+import requests as http_requests   # alias para no chocar con el `requests` de Brevo
+
+PAYPAL_CLIENT_ID  = os.environ.get("PAYPAL_CLIENT_ID", "")
+PAYPAL_SECRET     = os.environ.get("PAYPAL_SECRET", "")
+PAYPAL_RETURN_URL = os.environ.get("PAYPAL_RETURN_URL", "com.moon.casaprestamo://paypalpay")
+PAYPAL_CANCEL_URL = os.environ.get("PAYPAL_CANCEL_URL", "com.moon.casaprestamo://paypalpay/cancel")
+PAYPAL_MODE       = os.environ.get("PAYPAL_MODE", "sandbox")
+
+# Base URL cambia automáticamente según el modo
+PAYPAL_BASE = (
+    "https://api-m.sandbox.paypal.com"
+    if PAYPAL_MODE == "sandbox"
+    else "https://api-m.paypal.com"
+)
+
+
+# ── Modelo de request ─────────────────────────────────────────────
+
+class PaypalOrdenRequest(BaseModel):
+    id_pago: int
+    id_cliente: int
+
+
+class PaypalCapturarRequest(BaseModel):
+    token: str   # viene en la URL de retorno (?token=XXXX)
+    id_pago: int
+    id_cliente: int
+
+
+# ── Helper: obtener token de acceso de PayPal ─────────────────────
+
+def _paypal_access_token() -> str:
+    """
+    Solicita un Bearer token a PayPal usando las credenciales de la app.
+    El token dura ~9 horas — en producción conviene cachearlo.
+    """
+    response = http_requests.post(
+        f"{PAYPAL_BASE}/v1/oauth2/token",
+        auth=(PAYPAL_CLIENT_ID, PAYPAL_SECRET),
+        data={"grant_type": "client_credentials"},
+        headers={"Accept": "application/json"},
+        timeout=10
+    )
+    if response.status_code != 200:
+        raise HTTPException(
+            status_code=502,
+            detail=f"PayPal auth error {response.status_code}: {response.text}"
+        )
+    return response.json()["access_token"]
+
+
+# ══════════════════════════════════════════════════════════════════
+# ENDPOINT 1 — Crear orden
+#
+# Android llama este endpoint con id_pago e id_cliente.
+# El servidor verifica que el pago le pertenece al cliente,
+# crea la orden en PayPal y devuelve la approval_url.
+# Android abre esa URL en un WebView.
+# ══════════════════════════════════════════════════════════════════
+
+@app.post("/pagos/paypal/crear-orden")
+def crear_orden_paypal(request: PaypalOrdenRequest):
+    db = conectar()
+    cursor = db.cursor(dictionary=True)
+    try:
+        # 1. Verificar que el pago existe y pertenece al cliente
+        cursor.execute("SELECT * FROM pagos WHERE id_pago = %s", (request.id_pago,))
+        pago = cursor.fetchone()
+        if not pago:
+            raise HTTPException(status_code=404, detail="Pago no encontrado")
+
+        cursor.execute(
+            "SELECT id_cliente FROM prestamos WHERE id_prestamo = %s",
+            (pago["id_prestamo"],)
+        )
+        prestamo = cursor.fetchone()
+        if not prestamo or prestamo["id_cliente"] != request.id_cliente:
+            raise HTTPException(status_code=403, detail="No tienes permiso para pagar este préstamo")
+
+        if pago["estado"] == "pagado":
+            raise HTTPException(status_code=400, detail="Este pago ya fue registrado")
+
+        # 2. Validar orden secuencial (igual que en registrar_pago)
+        cursor.execute("""
+            SELECT COUNT(*) AS bloqueantes FROM pagos
+            WHERE id_prestamo = %s AND numero_pago < %s AND estado != 'pagado'
+        """, (pago["id_prestamo"], pago["numero_pago"]))
+        if int(cursor.fetchone().get("bloqueantes", 0) or 0) > 0:
+            raise HTTPException(status_code=403,
+                detail="Debes pagar las mensualidades anteriores primero.")
+
+        monto = float(pago["monto"])
+
+        # 3. Crear orden en PayPal
+        token = _paypal_access_token()
+        orden_response = http_requests.post(
+            f"{PAYPAL_BASE}/v2/checkout/orders",
+            json={
+                "intent": "CAPTURE",
+                "purchase_units": [{
+                    "reference_id": str(request.id_pago),
+                    "description": f"Mensualidad #{pago['numero_pago']} — Monte sin Piedad",
+                    "amount": {
+                        "currency_code": "MXN",
+                        "value": f"{monto:.2f}"
+                    }
+                }],
+                "application_context": {
+                    "brand_name": "Monte sin Piedad",
+                    "landing_page": "BILLING",
+                    "shipping_preference": "NO_SHIPPING",
+                    "user_action": "PAY_NOW",
+                    "return_url": PAYPAL_RETURN_URL,
+                    "cancel_url": PAYPAL_CANCEL_URL
+                }
+            },
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Content-Type": "application/json"
+            },
+            timeout=15
+        )
+
+        if orden_response.status_code not in (200, 201):
+            raise HTTPException(
+                status_code=502,
+                detail=f"PayPal error al crear orden: {orden_response.text}"
+            )
+
+        orden = orden_response.json()
+        orden_id = orden["id"]
+
+        # 4. Extraer la approval_url
+        approval_url = next(
+            (link["href"] for link in orden.get("links", [])
+             if link["rel"] == "approve"),
+            None
+        )
+        if not approval_url:
+            raise HTTPException(status_code=502, detail="PayPal no devolvió approval_url")
+
+        return {
+            "status": "success",
+            "orden_id": orden_id,
+            "approval_url": approval_url,
+            "monto": monto,
+            "numero_pago": pago["numero_pago"]
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        cursor.close()
+        db.close()
+
+
+# ══════════════════════════════════════════════════════════════════
+# ENDPOINT 2 — Capturar pago
+# ══════════════════════════════════════════════════════════════════
+
+@app.post("/pagos/paypal/capturar")
+def capturar_pago_paypal(request: PaypalCapturarRequest):
+    db = conectar()
+    cursor = db.cursor(dictionary=True)
+    try:
+        # 1. Verificar pago en BD
+        cursor.execute("SELECT * FROM pagos WHERE id_pago = %s", (request.id_pago,))
+        pago = cursor.fetchone()
+        if not pago:
+            raise HTTPException(status_code=404, detail="Pago no encontrado")
+        if pago["estado"] == "pagado":
+            raise HTTPException(status_code=400, detail="Este pago ya fue registrado")
+
+        cursor.execute(
+            "SELECT id_cliente FROM prestamos WHERE id_prestamo = %s",
+            (pago["id_prestamo"],)
+        )
+        prestamo = cursor.fetchone()
+        if not prestamo or prestamo["id_cliente"] != request.id_cliente:
+            raise HTTPException(status_code=403, detail="No tienes permiso")
+
+        monto = float(pago["monto"])
+        id_prestamo = pago["id_prestamo"]
+
+        # 2. Capturar la orden en PayPal
+        token_acceso = _paypal_access_token()
+        captura_response = http_requests.post(
+            f"{PAYPAL_BASE}/v2/checkout/orders/{request.token}/capture",
+            headers={
+                "Authorization": f"Bearer {token_acceso}",
+                "Content-Type": "application/json"
+            },
+            timeout=15
+        )
+
+        if captura_response.status_code not in (200, 201):
+            raise HTTPException(
+                status_code=502,
+                detail=f"PayPal error al capturar: {captura_response.text}"
+            )
+
+        captura = captura_response.json()
+        estado_paypal = captura.get("status", "")
+
+        if estado_paypal != "COMPLETED":
+            raise HTTPException(
+                status_code=400,
+                detail=f"El pago no fue completado. Estado PayPal: {estado_paypal}"
+            )
+
+        # 3. Registrar pago en BD
+        cursor.execute(
+            "UPDATE pagos SET estado='pagado', fecha_pago=NOW() WHERE id_pago = %s",
+            (request.id_pago,)
+        )
+        cursor.execute(
+            "UPDATE prestamos SET saldo_pendiente = GREATEST(0, saldo_pendiente - %s) WHERE id_prestamo = %s",
+            (monto, id_prestamo)
+        )
+
+        # Liquidar por conteo
+        cursor.execute(
+            "SELECT COUNT(*) AS pendientes FROM pagos WHERE id_prestamo = %s AND estado = 'pendiente'",
+            (id_prestamo,)
+        )
+        liquidado = int(cursor.fetchone().get("pendientes", 0) or 0) == 0
+        if liquidado:
+            cursor.execute(
+                "UPDATE prestamos SET estado='LIQUIDADO', saldo_pendiente=0 WHERE id_prestamo = %s",
+                (id_prestamo,)
+            )
+
+        # 4. Generar ticket con método PAYPAL
+        import hashlib, time
+        folio = f"TC-{request.id_pago}-{int(time.time())}"
+        firma = hashlib.sha256(f"{request.id_pago}{monto}{time.time()}".encode()).hexdigest()[:64]
+        cursor.execute("""
+            INSERT INTO tickets_pagos
+                (folio, id_pago, metodo_pago, monto_pagado,
+                 fecha_generacion, firma_digital, estado, tipo)
+            VALUES (%s, %s, 'PAYPAL', %s, NOW(), %s, 'ACTIVO', %s)
+        """, (folio, request.id_pago, monto, firma,
+              "LIQUIDACION" if liquidado else "PAGO"))
+
+        db.commit()
+        return {
+            "status": "success",
+            "message": f"Pago #{pago['numero_pago']} registrado exitosamente vía PayPal",
+            "monto": monto,
+            "id_prestamo": id_prestamo,
+            "liquidado": liquidado,
+            "folio": folio
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        cursor.close()
+        db.close()
+
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)

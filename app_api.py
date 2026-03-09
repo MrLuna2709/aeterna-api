@@ -1412,17 +1412,10 @@ def verificar_elegibilidad(id_cliente: int):
     finally:
         cursor.close()
         db.close()
-        
-# ══════════════════════════════════════════════════════════════════
-# PAYPAL — SANDBOX
-# Pegar al final de main.py antes del if __name__ == "__main__"
-#
-# Variables de entorno en Railway:
-#   PAYPAL_CLIENT_ID  → tu Client ID de sandbox
-#   PAYPAL_SECRET     → tu Secret Key de sandbox
-#   PAYPAL_MODE       → sandbox
-# ══════════════════════════════════════════════════════════════════
 
+
+
+# PAYPAL — SANDBOX
 import requests as http_requests
 
 PAYPAL_CLIENT_ID  = os.environ.get("PAYPAL_CLIENT_ID", "")
@@ -1435,62 +1428,41 @@ PAYPAL_BASE = (
     else "https://api-m.paypal.com"
 )
 
-# ── Return URL: debe ser https:// para que PayPal acepte la orden ─
-# Usamos un endpoint propio en Railway que redirige al deep link.
-# PayPal redirige a esta URL → Railway responde redirect → Android intercepta.
-# PAYPAL_RETURN_URL y PAYPAL_CANCEL_URL apuntan a tu propio servidor.
-# Reemplaza TU_DOMINIO_RAILWAY por el dominio real, ejemplo:
-#   casaprestamo-production.up.railway.app
 RAILWAY_DOMAIN    = os.environ.get("RAILWAY_PUBLIC_DOMAIN", "")
 PAYPAL_RETURN_URL = f"https://{RAILWAY_DOMAIN}/pagos/paypal/retorno"
 PAYPAL_CANCEL_URL = f"https://{RAILWAY_DOMAIN}/pagos/paypal/cancelar"
 
 
-# ══════════════════════════════════════════════════════════════════
-# ENDPOINTS DE REDIRECCIÓN
-# PayPal llega aquí con https://, nosotros redirigimos al deep link
-# ══════════════════════════════════════════════════════════════════
+# ── Redirecciones ─────────────────────────────────────────────────
 
 from fastapi.responses import RedirectResponse
 
 @app.get("/pagos/paypal/retorno")
 def paypal_retorno(token: str = "", PayerID: str = ""):
-    """
-    PayPal redirige aquí después de que el usuario aprueba.
-    Redirigimos al deep link de Android con el token.
-    """
     deep_link = f"com.moon.casaprestamo://paypalpay?token={token}&PayerID={PayerID}"
     return RedirectResponse(url=deep_link)
 
 @app.get("/pagos/paypal/cancelar")
 def paypal_cancelar():
-    """
-    PayPal redirige aquí si el usuario cancela.
-    """
-    deep_link = "com.moon.casaprestamo://paypalpay/cancel"
-    return RedirectResponse(url=deep_link)
+    return RedirectResponse(url="com.moon.casaprestamo://paypalpay/cancel")
 
 
-# ══════════════════════════════════════════════════════════════════
-# MODELOS
-# ══════════════════════════════════════════════════════════════════
+# ── Modelos ───────────────────────────────────────────────────────
 
 class PaypalOrdenRequest(BaseModel):
     id_pago:    int
     id_cliente: int
 
 class PaypalCapturarRequest(BaseModel):
-    token:      str
-    id_pago:    int
-    id_cliente: int
+    token:         str   # order_id de PayPal
+    access_token:  str   # el mismo token Bearer con el que se creó la orden
+    id_pago:       int
+    id_cliente:    int
 
 
-# ══════════════════════════════════════════════════════════════════
-# HELPERS — definidos UNA SOLA VEZ
-# ══════════════════════════════════════════════════════════════════
+# ── Helper único ──────────────────────────────────────────────────
 
 def _paypal_access_token() -> str:
-    """Obtiene un Bearer token fresco de PayPal."""
     response = http_requests.post(
         f"{PAYPAL_BASE}/v1/oauth2/token",
         auth=(PAYPAL_CLIENT_ID, PAYPAL_SECRET),
@@ -1500,32 +1472,14 @@ def _paypal_access_token() -> str:
     )
     print(f"PAYPAL AUTH → status={response.status_code}")
     if response.status_code != 200:
-        raise HTTPException(
-            status_code=502,
-            detail=f"PayPal auth error {response.status_code}: {response.text}"
-        )
+        raise HTTPException(status_code=502,
+            detail=f"PayPal auth error {response.status_code}: {response.text}")
     return response.json()["access_token"]
-
-
-def _paypal_estado_orden(token_acceso: str, orden_id: str) -> dict:
-    """Consulta el estado actual de una orden en PayPal."""
-    response = http_requests.get(
-        f"{PAYPAL_BASE}/v2/checkout/orders/{orden_id}",
-        headers={"Authorization": f"Bearer {token_acceso}", "Cache-Control": "no-cache"},
-        timeout=10
-    )
-    # En _paypal_estado_orden(), después del response:
-    print(f"PAYPAL ESTADO ORDEN → status={response.status_code} body={response.text}")
-    if response.status_code != 200:
-        raise HTTPException(
-            status_code=502,
-            detail=f"PayPal error al consultar orden: {response.text}"
-        )
-    return response.json()
 
 
 # ══════════════════════════════════════════════════════════════════
 # ENDPOINT 1 — Crear orden
+# Devuelve approval_url Y el access_token para reutilizarlo
 # ══════════════════════════════════════════════════════════════════
 
 @app.post("/pagos/paypal/crear-orden")
@@ -1559,10 +1513,9 @@ def crear_orden_paypal(request: PaypalOrdenRequest):
 
         monto = float(pago["monto"])
 
-        # Obtener token fresco
-        token = _paypal_access_token()
+        # Obtener token — se reutilizará en /capturar
+        token_acceso = _paypal_access_token()
 
-        # Crear orden en PayPal
         orden_response = http_requests.post(
             f"{PAYPAL_BASE}/v2/checkout/orders",
             json={
@@ -1585,20 +1538,18 @@ def crear_orden_paypal(request: PaypalOrdenRequest):
                 }
             },
             headers={
-                "Authorization": f"Bearer {token}",
+                "Authorization": f"Bearer {token_acceso}",
                 "Content-Type":  "application/json",
                 "Cache-Control": "no-cache"
             },
             timeout=15
         )
 
-        print(f"PAYPAL ORDEN → status={orden_response.status_code} body={orden_response.text}")
+        print(f"PAYPAL ORDEN → status={orden_response.status_code}")
 
         if orden_response.status_code not in (200, 201):
-            raise HTTPException(
-                status_code=502,
-                detail=f"PayPal error al crear orden: {orden_response.text}"
-            )
+            raise HTTPException(status_code=502,
+                detail=f"PayPal error al crear orden: {orden_response.text}")
 
         orden        = orden_response.json()
         orden_id     = orden["id"]
@@ -1610,11 +1561,12 @@ def crear_orden_paypal(request: PaypalOrdenRequest):
             raise HTTPException(status_code=502, detail="PayPal no devolvió approval_url")
 
         return {
-            "status":       "success",
-            "orden_id":     orden_id,
-            "approval_url": approval_url,
-            "monto":        monto,
-            "numero_pago":  pago["numero_pago"]
+            "status":        "success",
+            "orden_id":      orden_id,
+            "approval_url":  approval_url,
+            "access_token":  token_acceso,   # ← Android lo guarda y lo manda al capturar
+            "monto":         monto,
+            "numero_pago":   pago["numero_pago"]
         }
 
     except HTTPException:
@@ -1628,6 +1580,7 @@ def crear_orden_paypal(request: PaypalOrdenRequest):
 
 # ══════════════════════════════════════════════════════════════════
 # ENDPOINT 2 — Capturar pago
+# Usa el mismo access_token que vino de /crear-orden
 # ══════════════════════════════════════════════════════════════════
 
 @app.post("/pagos/paypal/capturar")
@@ -1635,7 +1588,6 @@ def capturar_pago_paypal(request: PaypalCapturarRequest):
     db     = conectar()
     cursor = db.cursor(dictionary=True)
     try:
-        # 1. Verificar pago en BD
         cursor.execute("SELECT * FROM pagos WHERE id_pago = %s", (request.id_pago,))
         pago = cursor.fetchone()
         if not pago:
@@ -1649,7 +1601,6 @@ def capturar_pago_paypal(request: PaypalCapturarRequest):
         if not prestamo or prestamo["id_cliente"] != request.id_cliente:
             raise HTTPException(status_code=403, detail="No tienes permiso")
 
-        # Si ya está pagado en BD — responder éxito sin tocar PayPal
         if pago["estado"] == "pagado":
             return {
                 "status":      "success",
@@ -1663,12 +1614,11 @@ def capturar_pago_paypal(request: PaypalCapturarRequest):
         monto       = float(pago["monto"])
         id_prestamo = pago["id_prestamo"]
 
-        # 2. Capturar directamente en PayPal
-        token_acceso = _paypal_access_token()
+        # Capturar usando el MISMO token con el que se creó la orden
         captura_response = http_requests.post(
             f"{PAYPAL_BASE}/v2/checkout/orders/{request.token}/capture",
             headers={
-                "Authorization": f"Bearer {token_acceso}",
+                "Authorization": f"Bearer {request.access_token}",
                 "Content-Type":  "application/json",
                 "Cache-Control": "no-cache"
             },
@@ -1677,9 +1627,6 @@ def capturar_pago_paypal(request: PaypalCapturarRequest):
 
         print(f"PAYPAL CAPTURA → status={captura_response.status_code} body={captura_response.text}")
 
-        # 422 = orden ya capturada antes (doble llamada)
-        # La tratamos como éxito si el pago ya está en BD — pero ya
-        # lo verificamos arriba, así que aquí significa inconsistencia
         if captura_response.status_code == 422:
             raise HTTPException(status_code=400,
                 detail="Este pago ya fue procesado en PayPal. Recarga tu cartera.")
@@ -1693,7 +1640,7 @@ def capturar_pago_paypal(request: PaypalCapturarRequest):
             raise HTTPException(status_code=400,
                 detail=f"El pago no fue completado. Estado PayPal: {estado_final}")
 
-        # 3. Registrar en BD
+        # Registrar en BD
         cursor.execute(
             "UPDATE pagos SET estado='pagado', fecha_pago=NOW() WHERE id_pago = %s",
             (request.id_pago,)

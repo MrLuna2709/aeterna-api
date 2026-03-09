@@ -1514,6 +1514,8 @@ def _paypal_estado_orden(token_acceso: str, orden_id: str) -> dict:
         headers={"Authorization": f"Bearer {token_acceso}", "Cache-Control": "no-cache"},
         timeout=10
     )
+    # En _paypal_estado_orden(), después del response:
+    print(f"PAYPAL ESTADO ORDEN → status={response.status_code} body={response.text}")
     if response.status_code != 200:
         raise HTTPException(
             status_code=502,
@@ -1654,7 +1656,7 @@ def capturar_pago_paypal(request: PaypalCapturarRequest):
         orden_paypal  = _paypal_estado_orden(token_acceso, request.token)
         estado_paypal = orden_paypal.get("status", "")
 
-        print(f"PAYPAL ESTADO ORDEN → {estado_paypal}")
+        print(f"PAYPAL CAPTURA → status={captura_response.status_code} body={captura_response.text}")
 
         if estado_paypal == "COMPLETED":
             if pago["estado"] == "pagado":

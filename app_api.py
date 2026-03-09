@@ -1635,6 +1635,7 @@ def capturar_pago_paypal(request: PaypalCapturarRequest):
     db     = conectar()
     cursor = db.cursor(dictionary=True)
     try:
+        # 1. Verificar pago en BD
         cursor.execute("SELECT * FROM pagos WHERE id_pago = %s", (request.id_pago,))
         pago = cursor.fetchone()
         if not pago:
@@ -1648,59 +1649,51 @@ def capturar_pago_paypal(request: PaypalCapturarRequest):
         if not prestamo or prestamo["id_cliente"] != request.id_cliente:
             raise HTTPException(status_code=403, detail="No tienes permiso")
 
+        # Si ya está pagado en BD — responder éxito sin tocar PayPal
+        if pago["estado"] == "pagado":
+            return {
+                "status":      "success",
+                "message":     f"Pago #{pago['numero_pago']} ya fue registrado anteriormente",
+                "monto":       float(pago["monto"]),
+                "id_prestamo": pago["id_prestamo"],
+                "liquidado":   False,
+                "folio":       "DUPLICADO"
+            }
+
         monto       = float(pago["monto"])
         id_prestamo = pago["id_prestamo"]
 
-        # Verificar estado en PayPal antes de capturar
-        token_acceso  = _paypal_access_token()
-        orden_paypal  = _paypal_estado_orden(token_acceso, request.token)
-        estado_paypal = orden_paypal.get("status", "")
+        # 2. Capturar directamente en PayPal
+        token_acceso = _paypal_access_token()
+        captura_response = http_requests.post(
+            f"{PAYPAL_BASE}/v2/checkout/orders/{request.token}/capture",
+            headers={
+                "Authorization": f"Bearer {token_acceso}",
+                "Content-Type":  "application/json",
+                "Cache-Control": "no-cache"
+            },
+            timeout=15
+        )
 
         print(f"PAYPAL CAPTURA → status={captura_response.status_code} body={captura_response.text}")
 
-        if estado_paypal == "COMPLETED":
-            if pago["estado"] == "pagado":
-                return {
-                    "status":      "success",
-                    "message":     f"Pago #{pago['numero_pago']} ya fue registrado anteriormente",
-                    "monto":       monto,
-                    "id_prestamo": id_prestamo,
-                    "liquidado":   False,
-                    "folio":       "DUPLICADO"
-                }
-            # Cobrado en PayPal pero no en BD — continúa a registrar
-
-        elif estado_paypal in ("VOIDED", "EXPIRED"):
+        # 422 = orden ya capturada antes (doble llamada)
+        # La tratamos como éxito si el pago ya está en BD — pero ya
+        # lo verificamos arriba, así que aquí significa inconsistencia
+        if captura_response.status_code == 422:
             raise HTTPException(status_code=400,
-                detail=f"La orden de PayPal fue {estado_paypal.lower()}. Inicia un nuevo pago.")
+                detail="Este pago ya fue procesado en PayPal. Recarga tu cartera.")
 
-        elif estado_paypal not in ("APPROVED", "COMPLETED"):
+        if captura_response.status_code not in (200, 201):
+            raise HTTPException(status_code=502,
+                detail=f"PayPal error al capturar: {captura_response.text}")
+
+        estado_final = captura_response.json().get("status", "")
+        if estado_final != "COMPLETED":
             raise HTTPException(status_code=400,
-                detail="El pago no ha sido aprobado por el usuario en PayPal.")
+                detail=f"El pago no fue completado. Estado PayPal: {estado_final}")
 
-        # Capturar en PayPal solo si aún no está COMPLETED
-        if estado_paypal != "COMPLETED":
-            captura_response = http_requests.post(
-                f"{PAYPAL_BASE}/v2/checkout/orders/{request.token}/capture",
-                headers={
-                    "Authorization": f"Bearer {token_acceso}",
-                    "Content-Type":  "application/json",
-                    "Cache-Control": "no-cache"
-                },
-                timeout=15
-            )
-            print(f"PAYPAL CAPTURA → status={captura_response.status_code} body={captura_response.text}")
-
-            if captura_response.status_code not in (200, 201):
-                raise HTTPException(status_code=502,
-                    detail=f"PayPal error al capturar: {captura_response.text}")
-
-            estado_final = captura_response.json().get("status", "")
-            if estado_final != "COMPLETED":
-                raise HTTPException(status_code=400,
-                    detail=f"El pago no fue completado. Estado PayPal: {estado_final}")
-
-        # Registrar en BD
+        # 3. Registrar en BD
         cursor.execute(
             "UPDATE pagos SET estado='pagado', fecha_pago=NOW() WHERE id_pago = %s",
             (request.id_pago,)

@@ -1614,14 +1614,46 @@ def capturar_pago_paypal(request: PaypalCapturarRequest):
         monto       = float(pago["monto"])
         id_prestamo = pago["id_prestamo"]
 
-        # Capturar usando el MISMO token con el que se creó la orden
+        # Generar token fresco con Basic Auth directamente en la captura
+        # En lugar de Bearer token, usamos Basic Auth que PayPal
+        # siempre acepta para operaciones sobre órdenes propias
+        import base64
+        credentials = base64.b64encode(
+            f"{PAYPAL_CLIENT_ID}:{PAYPAL_SECRET}".encode()
+        ).decode()
+
+        # Primero obtener token fresco
+        auth_response = http_requests.post(
+            f"{PAYPAL_BASE}/v1/oauth2/token",
+            headers={
+                "Authorization": f"Basic {credentials}",
+                "Content-Type": "application/x-www-form-urlencoded",
+                "Cache-Control": "no-cache",
+                "Pragma": "no-cache"
+            },
+            data="grant_type=client_credentials",
+            timeout=10
+        )
+
+        print(f"PAYPAL CAPTURA AUTH → status={auth_response.status_code}")
+
+        if auth_response.status_code != 200:
+            raise HTTPException(status_code=502,
+                detail=f"PayPal auth error: {auth_response.text}")
+
+        token_fresco = auth_response.json()["access_token"]
+
+        # Capturar la orden con el token recién generado
         captura_response = http_requests.post(
             f"{PAYPAL_BASE}/v2/checkout/orders/{request.token}/capture",
             headers={
-                "Authorization": f"Bearer {request.access_token}",
+                "Authorization": f"Bearer {token_fresco}",
                 "Content-Type":  "application/json",
-                "Cache-Control": "no-cache"
+                "Cache-Control": "no-cache",
+                "Pragma":        "no-cache",
+                "PayPal-Request-Id": f"capture-{request.id_pago}-{request.token}"
             },
+            json={},   # body vacío explícito
             timeout=15
         )
 
@@ -1662,7 +1694,9 @@ def capturar_pago_paypal(request: PaypalCapturarRequest):
 
         import hashlib, time
         folio = f"TC-{request.id_pago}-{int(time.time())}"
-        firma = hashlib.sha256(f"{request.id_pago}{monto}{time.time()}".encode()).hexdigest()[:64]
+        firma = hashlib.sha256(
+            f"{request.id_pago}{monto}{time.time()}".encode()
+        ).hexdigest()[:64]
         cursor.execute("""
             INSERT INTO tickets_pagos
                 (folio, id_pago, metodo_pago, monto_pagado,

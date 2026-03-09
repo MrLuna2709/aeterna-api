@@ -1638,11 +1638,18 @@ def capturar_pago_paypal(request: PaypalCapturarRequest):
         token_acceso = _paypal_access_token()  # mismo token cacheado
 
         print(f"PAYPAL CAPTURA → intentando capturar orden {request.token} con token {token_acceso[:20]}...")
+        # Por esto:
+        import base64
+        credenciales = base64.b64encode(
+            f"{PAYPAL_CLIENT_ID}:{PAYPAL_SECRET}".encode()
+        ).decode()
+        
         captura_response = http_requests.post(
             f"{PAYPAL_BASE}/v2/checkout/orders/{request.token}/capture",
             headers={
-                "Authorization": f"Bearer {token_acceso}",
-                "Content-Type":  "application/json"
+                "Authorization":             f"Basic {credenciales}",
+                "Content-Type":              "application/json",
+                "PayPal-Client-Metadata-Id": str(request.id_pago)
             },
             json={},
             timeout=15

@@ -1416,6 +1416,8 @@ def verificar_elegibilidad(id_cliente: int):
 
 
 # PAYPAL — SANDBOX
+
+import time
 import requests as http_requests
 
 PAYPAL_CLIENT_ID  = os.environ.get("PAYPAL_CLIENT_ID", "")
@@ -1431,6 +1433,49 @@ PAYPAL_BASE = (
 RAILWAY_DOMAIN    = os.environ.get("RAILWAY_PUBLIC_DOMAIN", "")
 PAYPAL_RETURN_URL = f"https://{RAILWAY_DOMAIN}/pagos/paypal/retorno"
 PAYPAL_CANCEL_URL = f"https://{RAILWAY_DOMAIN}/pagos/paypal/cancelar"
+
+# ── Cache del token en memoria del proceso ────────────────────────
+# Se comparte entre todos los requests del mismo worker de Railway
+_paypal_token_cache = {
+    "access_token": None,
+    "expires_at":   0       # timestamp unix
+}
+
+def _paypal_access_token() -> str:
+    """
+    Devuelve el token cacheado si aún es válido (con 5 min de margen).
+    Si expiró o no existe, genera uno nuevo y lo cachea.
+    Así crear-orden y capturar siempre usan el mismo token.
+    """
+    ahora = time.time()
+    margen = 300  # 5 minutos de seguridad antes de expirar
+
+    if (
+        _paypal_token_cache["access_token"] and
+        ahora < _paypal_token_cache["expires_at"] - margen
+    ):
+        print(f"PAYPAL TOKEN → usando cacheado, expira en {int(_paypal_token_cache['expires_at'] - ahora)}s")
+        return _paypal_token_cache["access_token"]
+
+    # Generar token nuevo
+    response = http_requests.post(
+        f"{PAYPAL_BASE}/v1/oauth2/token",
+        auth=(PAYPAL_CLIENT_ID, PAYPAL_SECRET),
+        data={"grant_type": "client_credentials"},
+        headers={"Accept": "application/json"},
+        timeout=10
+    )
+    print(f"PAYPAL AUTH → status={response.status_code}")
+    if response.status_code != 200:
+        raise HTTPException(status_code=502,
+            detail=f"PayPal auth error {response.status_code}: {response.text}")
+
+    data = response.json()
+    _paypal_token_cache["access_token"] = data["access_token"]
+    _paypal_token_cache["expires_at"]   = ahora + data.get("expires_in", 32400)
+
+    print(f"PAYPAL AUTH → token nuevo generado, válido por {data.get('expires_in', 32400)}s")
+    return _paypal_token_cache["access_token"]
 
 
 # ── Redirecciones ─────────────────────────────────────────────────
@@ -1454,32 +1499,13 @@ class PaypalOrdenRequest(BaseModel):
     id_cliente: int
 
 class PaypalCapturarRequest(BaseModel):
-    token:         str   # order_id de PayPal
-    access_token:  str   # el mismo token Bearer con el que se creó la orden
-    id_pago:       int
-    id_cliente:    int
-
-
-# ── Helper único ──────────────────────────────────────────────────
-
-def _paypal_access_token() -> str:
-    response = http_requests.post(
-        f"{PAYPAL_BASE}/v1/oauth2/token",
-        auth=(PAYPAL_CLIENT_ID, PAYPAL_SECRET),
-        data={"grant_type": "client_credentials"},
-        headers={"Accept": "application/json", "Cache-Control": "no-cache"},
-        timeout=10
-    )
-    print(f"PAYPAL AUTH → status={response.status_code}")
-    if response.status_code != 200:
-        raise HTTPException(status_code=502,
-            detail=f"PayPal auth error {response.status_code}: {response.text}")
-    return response.json()["access_token"]
+    token:      str   # order_id de PayPal
+    id_pago:    int
+    id_cliente: int
 
 
 # ══════════════════════════════════════════════════════════════════
 # ENDPOINT 1 — Crear orden
-# Devuelve approval_url Y el access_token para reutilizarlo
 # ══════════════════════════════════════════════════════════════════
 
 @app.post("/pagos/paypal/crear-orden")
@@ -1511,10 +1537,8 @@ def crear_orden_paypal(request: PaypalOrdenRequest):
             raise HTTPException(status_code=403,
                 detail="Debes pagar las mensualidades anteriores primero.")
 
-        monto = float(pago["monto"])
-
-        # Obtener token — se reutilizará en /capturar
-        token_acceso = _paypal_access_token()
+        monto        = float(pago["monto"])
+        token_acceso = _paypal_access_token()  # cacheado
 
         orden_response = http_requests.post(
             f"{PAYPAL_BASE}/v2/checkout/orders",
@@ -1539,8 +1563,7 @@ def crear_orden_paypal(request: PaypalOrdenRequest):
             },
             headers={
                 "Authorization": f"Bearer {token_acceso}",
-                "Content-Type":  "application/json",
-                "Cache-Control": "no-cache"
+                "Content-Type":  "application/json"
             },
             timeout=15
         )
@@ -1561,12 +1584,11 @@ def crear_orden_paypal(request: PaypalOrdenRequest):
             raise HTTPException(status_code=502, detail="PayPal no devolvió approval_url")
 
         return {
-            "status":        "success",
-            "orden_id":      orden_id,
-            "approval_url":  approval_url,
-            "access_token":  token_acceso,   # ← Android lo guarda y lo manda al capturar
-            "monto":         monto,
-            "numero_pago":   pago["numero_pago"]
+            "status":       "success",
+            "orden_id":     orden_id,
+            "approval_url": approval_url,
+            "monto":        monto,
+            "numero_pago":  pago["numero_pago"]
         }
 
     except HTTPException:
@@ -1580,7 +1602,7 @@ def crear_orden_paypal(request: PaypalOrdenRequest):
 
 # ══════════════════════════════════════════════════════════════════
 # ENDPOINT 2 — Capturar pago
-# Usa el mismo access_token que vino de /crear-orden
+# Usa el mismo token cacheado que usó crear-orden
 # ══════════════════════════════════════════════════════════════════
 
 @app.post("/pagos/paypal/capturar")
@@ -1611,49 +1633,17 @@ def capturar_pago_paypal(request: PaypalCapturarRequest):
                 "folio":       "DUPLICADO"
             }
 
-        monto       = float(pago["monto"])
-        id_prestamo = pago["id_prestamo"]
+        monto        = float(pago["monto"])
+        id_prestamo  = pago["id_prestamo"]
+        token_acceso = _paypal_access_token()  # mismo token cacheado
 
-        # Generar token fresco con Basic Auth directamente en la captura
-        # En lugar de Bearer token, usamos Basic Auth que PayPal
-        # siempre acepta para operaciones sobre órdenes propias
-        import base64
-        credentials = base64.b64encode(
-            f"{PAYPAL_CLIENT_ID}:{PAYPAL_SECRET}".encode()
-        ).decode()
-
-        # Primero obtener token fresco
-        auth_response = http_requests.post(
-            f"{PAYPAL_BASE}/v1/oauth2/token",
-            headers={
-                "Authorization": f"Basic {credentials}",
-                "Content-Type": "application/x-www-form-urlencoded",
-                "Cache-Control": "no-cache",
-                "Pragma": "no-cache"
-            },
-            data="grant_type=client_credentials",
-            timeout=10
-        )
-
-        print(f"PAYPAL CAPTURA AUTH → status={auth_response.status_code}")
-
-        if auth_response.status_code != 200:
-            raise HTTPException(status_code=502,
-                detail=f"PayPal auth error: {auth_response.text}")
-
-        token_fresco = auth_response.json()["access_token"]
-
-        # Capturar la orden con el token recién generado
         captura_response = http_requests.post(
             f"{PAYPAL_BASE}/v2/checkout/orders/{request.token}/capture",
             headers={
-                "Authorization": f"Bearer {token_fresco}",
-                "Content-Type":  "application/json",
-                "Cache-Control": "no-cache",
-                "Pragma":        "no-cache",
-                "PayPal-Request-Id": f"capture-{request.id_pago}-{request.token}"
+                "Authorization": f"Bearer {token_acceso}",
+                "Content-Type":  "application/json"
             },
-            json={},   # body vacío explícito
+            json={},
             timeout=15
         )
 
@@ -1692,7 +1682,7 @@ def capturar_pago_paypal(request: PaypalCapturarRequest):
                 (id_prestamo,)
             )
 
-        import hashlib, time
+        import hashlib
         folio = f"TC-{request.id_pago}-{int(time.time())}"
         firma = hashlib.sha256(
             f"{request.id_pago}{monto}{time.time()}".encode()

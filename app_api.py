@@ -1638,23 +1638,15 @@ def capturar_pago_paypal(request: PaypalCapturarRequest):
         token_acceso = _paypal_access_token()  # mismo token cacheado
 
         print(f"PAYPAL CAPTURA → intentando capturar orden {request.token} con token {token_acceso[:20]}...")
-        session = http_requests.Session()
-        
-        try:
-            captura_response = session.post(
-                f"{PAYPAL_BASE}/v2/checkout/orders/{request.token}/capture",
-                headers={
-                    "Authorization": f"Bearer {token_acceso}",
-                    "Content-Type":  "application/json",
-                },
-                json={},
-                timeout=15,
-                allow_redirects=False
-            )
-        except http_requests.exceptions.TooManyRedirects:
-            raise HTTPException(status_code=502, detail="PayPal redirect inesperado")
-        
-        print(f"PAYPAL CAPTURA → status={captura_response.status_code} body={captura_response.text}")
+        captura_response = http_requests.post(
+            f"{PAYPAL_BASE}/v2/checkout/orders/{request.token}/capture",
+            headers={
+                "Authorization": f"Bearer {token_acceso}",
+                "Content-Type":  "application/json"
+            },
+            json={},
+            timeout=15
+        )
 
         print(f"PAYPAL CAPTURA → status={captura_response.status_code} body={captura_response.text}")
 

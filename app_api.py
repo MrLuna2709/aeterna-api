@@ -1637,6 +1637,7 @@ def capturar_pago_paypal(request: PaypalCapturarRequest):
         id_prestamo  = pago["id_prestamo"]
         token_acceso = _paypal_access_token()  # mismo token cacheado
 
+        print(f"PAYPAL CAPTURA → intentando capturar orden {request.token} con token {token_acceso[:20]}...")
         captura_response = http_requests.post(
             f"{PAYPAL_BASE}/v2/checkout/orders/{request.token}/capture",
             headers={

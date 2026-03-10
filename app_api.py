@@ -12,6 +12,7 @@ import mysql.connector
 from datetime import datetime, timedelta
 import random
 import os
+import json
 
 # ==================== BREVO API ====================
 import requests
@@ -20,11 +21,11 @@ BREVO_API_KEY = os.environ.get("BREVO_API_KEY", "")
 
 # ==================== CONFIGURACIÓN BD (VARIABLES DE ENTORNO) ====================
 DB_CONFIG = {
-    'host': os.environ.get('MYSQLHOST', 'junction.proxy.rlwy.net'),
-    'port': int(os.environ.get('MYSQLPORT', '16661')),
-    'user': os.environ.get('MYSQLUSER', 'root'),
-    'password': os.environ.get('MYSQL_ROOT_PASSWORD', 'rOhOhfujlMBVGnrTtIYJQLAtxcMlsBOP'),
-    'database': os.environ.get('MYSQLDATABASE', 'railway')
+    'host':     os.environ.get('MYSQLHOST',           'junction.proxy.rlwy.net'),
+    'port':     int(os.environ.get('MYSQLPORT',       '16661')),
+    'user':     os.environ.get('MYSQLUSER',            'root'),
+    'password': os.environ.get('MYSQL_ROOT_PASSWORD',  'rOhOhfujlMBVGnrTtIYJQLAtxcMlsBOP'),
+    'database': os.environ.get('MYSQLDATABASE',        'railway')
 }
 
 # ==================== FASTAPI APP ====================
@@ -110,6 +111,7 @@ def enviar_email_resend(destinatario: str, asunto: str, html: str):
         print(f"❌ Error Brevo API: {e}")
         raise Exception(f"No se pudo enviar el correo: {str(e)}")
 
+
 def email_codigo_recuperacion(destinatario: str, codigo: str, nombre: str = "Usuario"):
     html = f"""<!DOCTYPE html><html><head><meta charset="UTF-8"></head>
     <body style="font-family:Arial,sans-serif;background:#f1f5f9;margin:0;padding:20px;">
@@ -134,6 +136,7 @@ def email_codigo_recuperacion(destinatario: str, codigo: str, nombre: str = "Usu
     </body></html>"""
     return enviar_email_resend(destinatario, f"🔐 Código de Recuperación: {codigo}", html)
 
+
 def email_verificacion_cuenta(destinatario: str, codigo: str, nombre: str):
     html = f"""<!DOCTYPE html><html><head><meta charset="UTF-8"></head>
     <body style="font-family:Arial,sans-serif;background:#f1f5f9;margin:0;padding:20px;">
@@ -154,6 +157,7 @@ def email_verificacion_cuenta(destinatario: str, codigo: str, nombre: str):
     </body></html>"""
     return enviar_email_resend(destinatario, "✅ Verifica tu cuenta - Monte sin Piedad", html)
 
+
 def email_bienvenida(destinatario: str, nombre: str):
     html = f"""<!DOCTYPE html><html><head><meta charset="UTF-8"></head>
     <body style="font-family:Arial,sans-serif;background:#f1f5f9;margin:0;padding:20px;">
@@ -171,11 +175,112 @@ def email_bienvenida(destinatario: str, nombre: str):
     </body></html>"""
     return enviar_email_resend(destinatario, f"🎉 ¡Bienvenido a Monte sin Piedad, {nombre}!", html)
 
+
+# ── Emails de notificaciones de préstamo ──────────────────────────────────────
+
+def email_credito_aprobado(destinatario: str, nombre: str, folio: str,
+                            monto: float, plazo: int, cuota: float):
+    html = f"""<!DOCTYPE html><html><head><meta charset="UTF-8"></head>
+    <body style="font-family:Arial,sans-serif;background:#f1f5f9;margin:0;padding:20px;">
+      <div style="max-width:560px;margin:auto;background:#fff;border-radius:16px;overflow:hidden;box-shadow:0 4px 6px rgba(0,0,0,.1);">
+        <div style="background:linear-gradient(135deg,#10b981,#059669);padding:40px;text-align:center;">
+          <div style="font-size:60px;">✅</div>
+          <h1 style="color:white;margin:8px 0 0;">¡CRÉDITO APROBADO!</h1>
+        </div>
+        <div style="padding:40px 30px;">
+          <p style="color:#475569;font-size:16px;">Hola <strong>{nombre}</strong>,</p>
+          <p style="color:#475569;">Tu solicitud de crédito ha sido aprobada. Aquí están los detalles:</p>
+          <div style="background:#f8fafc;border:2px solid #e2e8f0;border-radius:12px;padding:25px;margin:25px 0;">
+            <table width="100%" style="border-collapse:collapse;">
+              <tr>
+                <td style="color:#64748b;font-size:14px;padding:10px 0;border-bottom:1px solid #e2e8f0;">Folio</td>
+                <td style="color:#1e293b;font-weight:600;text-align:right;padding:10px 0;border-bottom:1px solid #e2e8f0;">{folio}</td>
+              </tr>
+              <tr>
+                <td style="color:#64748b;font-size:14px;padding:10px 0;border-bottom:1px solid #e2e8f0;">Monto aprobado</td>
+                <td style="color:#10b981;font-weight:700;font-size:18px;text-align:right;padding:10px 0;border-bottom:1px solid #e2e8f0;">${monto:,.2f}</td>
+              </tr>
+              <tr>
+                <td style="color:#64748b;font-size:14px;padding:10px 0;border-bottom:1px solid #e2e8f0;">Plazo</td>
+                <td style="color:#1e293b;font-weight:600;text-align:right;padding:10px 0;border-bottom:1px solid #e2e8f0;">{plazo} meses</td>
+              </tr>
+              <tr>
+                <td style="color:#64748b;font-size:14px;padding:10px 0;">Cuota mensual</td>
+                <td style="color:#A6032F;font-weight:700;font-size:18px;text-align:right;padding:10px 0;">${cuota:,.2f}</td>
+              </tr>
+            </table>
+          </div>
+          <div style="background:#ecfdf5;border-left:4px solid #10b981;padding:15px;border-radius:8px;">
+            <p style="color:#065f46;margin:0;font-size:14px;">
+              💡 Puedes ver tu calendario de pagos desde la aplicación.
+            </p>
+          </div>
+        </div>
+        <div style="text-align:center;padding:20px;font-size:12px;color:#94a3b8;border-top:1px solid #e2e8f0;">
+          <p>© {datetime.now().year} Monte de Piedad — correo automático</p>
+        </div>
+      </div>
+    </body></html>"""
+    try:
+        enviar_email_resend(destinatario, f"✅ Crédito Aprobado — {folio}", html)
+    except Exception as e:
+        print(f"⚠️ Email crédito aprobado no enviado: {e}")
+
+
+def email_credito_rechazado(destinatario: str, nombre: str, folio: str, monto: float):
+    html = f"""<!DOCTYPE html><html><head><meta charset="UTF-8"></head>
+    <body style="font-family:Arial,sans-serif;background:#f1f5f9;margin:0;padding:20px;">
+      <div style="max-width:560px;margin:auto;background:#fff;border-radius:16px;overflow:hidden;box-shadow:0 4px 6px rgba(0,0,0,.1);">
+        <div style="background:linear-gradient(135deg,#ef4444,#dc2626);padding:40px;text-align:center;">
+          <div style="font-size:60px;">❌</div>
+          <h1 style="color:white;margin:8px 0 0;">SOLICITUD NO APROBADA</h1>
+        </div>
+        <div style="padding:40px 30px;">
+          <p style="color:#475569;font-size:16px;">Hola <strong>{nombre}</strong>,</p>
+          <p style="color:#475569;">Lamentamos informarte que tu solicitud de crédito no pudo ser aprobada en esta ocasión.</p>
+          <div style="background:#f8fafc;border:2px solid #e2e8f0;border-radius:12px;padding:25px;margin:25px 0;text-align:center;">
+            <div style="color:#64748b;font-size:14px;">Folio de solicitud</div>
+            <div style="color:#1e293b;font-weight:700;font-size:20px;margin:8px 0;">{folio}</div>
+            <div style="color:#64748b;font-size:14px;">Monto solicitado: <strong>${monto:,.2f}</strong></div>
+          </div>
+          <div style="background:#fef2f2;border-left:4px solid #ef4444;padding:15px;border-radius:8px;">
+            <p style="color:#991b1b;margin:0;font-size:14px;">
+              Puedes volver a solicitar un crédito en cualquier momento desde la aplicación.
+            </p>
+          </div>
+        </div>
+        <div style="text-align:center;padding:20px;font-size:12px;color:#94a3b8;border-top:1px solid #e2e8f0;">
+          <p>© {datetime.now().year} Monte de Piedad — correo automático</p>
+        </div>
+      </div>
+    </body></html>"""
+    try:
+        enviar_email_resend(destinatario, f"Resultado de tu solicitud — {folio}", html)
+    except Exception as e:
+        print(f"⚠️ Email crédito rechazado no enviado: {e}")
+
+
+# ── Helpers de notificaciones ─────────────────────────────────────────────────
+
+def _guardar_notificacion(cursor, id_usuario: int, tipo: str,
+                           titulo: str, mensaje: str, datos_extra: dict = None):
+    """Inserta una notificación en la tabla notificaciones."""
+    extra_json = json.dumps(datos_extra or {}, ensure_ascii=False)
+    cursor.execute("""
+        INSERT INTO notificaciones
+            (id_usuario, tipo, titulo, mensaje, leida, datos_extra)
+        VALUES (%s, %s, %s, %s, 0, %s)
+    """, (id_usuario, tipo, titulo, mensaje, extra_json))
+
+
+# ── Funciones background ──────────────────────────────────────────────────────
+
 def enviar_email_bienvenida_background(destinatario: str, nombre: str):
     try:
         email_bienvenida(destinatario, nombre)
     except Exception as e:
         print(f"⚠️ Email de bienvenida no enviado: {e}")
+
 
 def enviar_email_verificacion_background(destinatario: str, codigo: str, nombre: str):
     try:
@@ -183,17 +288,34 @@ def enviar_email_verificacion_background(destinatario: str, codigo: str, nombre:
     except Exception as e:
         print(f"⚠️ Email de verificación no enviado: {e}")
 
+
 def enviar_email_codigo_recuperacion_background(destinatario: str, codigo: str, nombre: str):
     try:
         email_codigo_recuperacion(destinatario, codigo, nombre)
     except Exception as e:
         print(f"⚠️ Email de recuperación no enviado: {e}")
 
+
+def _bg_email_aprobado(destinatario, nombre, folio, monto, plazo, cuota):
+    try:
+        email_credito_aprobado(destinatario, nombre, folio, monto, plazo, cuota)
+    except Exception as e:
+        print(f"⚠️ Email aprobado no enviado: {e}")
+
+
+def _bg_email_rechazado(destinatario, nombre, folio, monto):
+    try:
+        email_credito_rechazado(destinatario, nombre, folio, monto)
+    except Exception as e:
+        print(f"⚠️ Email rechazado no enviado: {e}")
+
+
 # ==================== ENDPOINTS ====================
 
 @app.get("/")
 def root():
     return {"app": "Monte SIN Piedad API", "version": "2.0", "status": "✅ Operativo"}
+
 
 @app.post("/login")
 def login_unificado(request: LoginRequest):
@@ -234,6 +356,7 @@ def login_unificado(request: LoginRequest):
     finally:
         cursor.close()
         db.close()
+
 
 @app.post("/registrar_cliente")
 def registrar_cliente(request: RegistroClienteRequest, background_tasks: BackgroundTasks):
@@ -280,6 +403,7 @@ def registrar_cliente(request: RegistroClienteRequest, background_tasks: Backgro
         cursor.close()
         db.close()
 
+
 @app.post("/verificar_email")
 def verificar_email(request: VerificarEmailRequest):
     db = conectar()
@@ -315,6 +439,7 @@ def verificar_email(request: VerificarEmailRequest):
         cursor.close()
         db.close()
 
+
 @app.post("/reenviar_codigo_verificacion")
 def reenviar_codigo(email: str = Query(...)):
     db = conectar()
@@ -342,6 +467,7 @@ def reenviar_codigo(email: str = Query(...)):
         cursor.close()
         db.close()
 
+
 @app.post("/solicitar_codigo")
 @app.post("/solicitor_codigo")
 def solicitar_codigo_recuperacion(background_tasks: BackgroundTasks, email: str = Query(...)):
@@ -367,6 +493,7 @@ def solicitar_codigo_recuperacion(background_tasks: BackgroundTasks, email: str 
     finally:
         cursor.close()
         db.close()
+
 
 @app.post("/verificar_codigo")
 def verificar_codigo(request: RecuperacionRequest):
@@ -402,6 +529,7 @@ def verificar_codigo(request: RecuperacionRequest):
         cursor.close()
         db.close()
 
+
 # ==================== ENDPOINTS DE CONSULTA ====================
 
 @app.get("/usuarios")
@@ -436,6 +564,7 @@ def obtener_usuarios(rol: Optional[str] = None):
         cursor.close()
         db.close()
 
+
 @app.get("/usuario/{id_usuario}")
 def obtener_usuario(id_usuario: int):
     db = conectar()
@@ -461,6 +590,7 @@ def obtener_usuario(id_usuario: int):
         cursor.close()
         db.close()
 
+
 @app.get("/cliente/{id_cliente}/perfil")
 def obtener_perfil_cliente(id_cliente: int):
     db = conectar()
@@ -485,6 +615,7 @@ def obtener_perfil_cliente(id_cliente: int):
         cursor.close()
         db.close()
 
+
 @app.put("/cliente/{id_cliente}/perfil")
 def actualizar_perfil_cliente(id_cliente: int, request: ActualizarPerfilClienteRequest):
     db = conectar()
@@ -508,6 +639,7 @@ def actualizar_perfil_cliente(id_cliente: int, request: ActualizarPerfilClienteR
     finally:
         cursor.close()
         db.close()
+
 
 # ==================== MODELOS ADICIONALES ====================
 
@@ -554,6 +686,7 @@ class ConfiguracionRequest(BaseModel):
     monto_minimo: Optional[float] = None
     monto_maximo: Optional[float] = None
 
+
 # ==================== ENDPOINTS CLIENTE ====================
 
 @app.post("/cliente/prestamo")
@@ -596,25 +729,20 @@ def solicitar_prestamo(request: PrestamoRequest):
             raise HTTPException(status_code=400, detail="Ya tienes una solicitud pendiente")
 
         cursor.execute("""
-            SELECT COUNT(*) AS activos
-            FROM prestamos
+            SELECT COUNT(*) AS activos FROM prestamos
             WHERE id_cliente = %s AND estado IN ('ACTIVO', 'MOROSO', 'PENDIENTE')
         """, (request.id_cliente,))
         if int(cursor.fetchone().get('activos', 0) or 0) >= 4:
             raise HTTPException(status_code=403,
                 detail="Tienes 4 créditos activos. Liquida alguno para solicitar uno nuevo.")
 
-        # ── Límite: préstamo más reciente ≥ 50% pagado ─────────
         cursor.execute("""
-            SELECT p.plazo_meses,
-                   COUNT(g.id_pago) AS pagados
+            SELECT p.plazo_meses, COUNT(g.id_pago) AS pagados
             FROM prestamos p
-            LEFT JOIN pagos g
-                   ON g.id_prestamo = p.id_prestamo AND g.estado = 'pagado'
+            LEFT JOIN pagos g ON g.id_prestamo = p.id_prestamo AND g.estado = 'pagado'
             WHERE p.id_cliente = %s AND p.estado IN ('ACTIVO', 'MOROSO')
             GROUP BY p.id_prestamo, p.plazo_meses
-            ORDER BY p.fecha_aprobacion DESC
-            LIMIT 1
+            ORDER BY p.fecha_aprobacion DESC LIMIT 1
         """, (request.id_cliente,))
         rec = cursor.fetchone()
         if rec:
@@ -628,7 +756,6 @@ def solicitar_prestamo(request: PrestamoRequest):
         capital = request.monto
         plazo   = request.plazo_meses
         cuota   = capital * (tasa * (1 + tasa)**plazo) / ((1 + tasa)**plazo - 1)
-
         cuota_redondeada = round(cuota, 2)
         saldo_total      = round(cuota * plazo, 2)
 
@@ -636,13 +763,9 @@ def solicitar_prestamo(request: PrestamoRequest):
             INSERT INTO prestamos
                 (id_cliente, monto_total, saldo_pendiente, tasa_interes, plazo_meses, estado, fecha_creacion)
             VALUES (%s, %s, %s, %s, %s, 'PENDIENTE', NOW())
-        """, (request.id_cliente,
-              capital,      # ← monto_total = CAPITAL (lo que se presta), NO el total con intereses
-              saldo_total,  # ← saldo_pendiente = total a pagar (capital + intereses)
-              tasa, plazo))
+        """, (request.id_cliente, capital, saldo_total, tasa, plazo))
 
         db.commit()
-
         return {
             "status":        "success",
             "message":       "Solicitud enviada. Un empleado la revisará pronto.",
@@ -658,6 +781,7 @@ def solicitar_prestamo(request: PrestamoRequest):
     finally:
         cursor.close()
         db.close()
+
 
 @app.get("/cliente/mis_prestamos")
 @app.get("/cliente/{id_cliente_path}/prestamos")
@@ -675,8 +799,8 @@ def obtener_mis_prestamos(id_cliente: Optional[int] = Query(None), id_cliente_pa
                    p.monto_total, p.saldo_pendiente, p.tasa_interes,
                    p.plazo_meses, p.estado,
                    p.fecha_creacion, p.fecha_aprobacion,
-                   (SELECT COUNT(*) FROM pagos g WHERE g.id_prestamo = p.id_prestamo AND g.estado = 'pagado')   AS pagos_realizados,
-                   (SELECT COUNT(*) FROM pagos g WHERE g.id_prestamo = p.id_prestamo)                           AS total_pagos
+                   (SELECT COUNT(*) FROM pagos g WHERE g.id_prestamo = p.id_prestamo AND g.estado = 'pagado') AS pagos_realizados,
+                   (SELECT COUNT(*) FROM pagos g WHERE g.id_prestamo = p.id_prestamo)                         AS total_pagos
             FROM prestamos p
             WHERE p.id_cliente = %s
             ORDER BY p.fecha_creacion DESC
@@ -695,6 +819,7 @@ def obtener_mis_prestamos(id_cliente: Optional[int] = Query(None), id_cliente_pa
     finally:
         cursor.close()
         db.close()
+
 
 @app.get("/cliente/cartera")
 @app.get("/cliente/{id_cliente_path}/cartera")
@@ -755,6 +880,7 @@ def obtener_cartera(id_cliente: Optional[int] = Query(None), id_cliente_path: Op
         cursor.close()
         db.close()
 
+
 @app.get("/cliente/pagos/{id_prestamo}")
 @app.get("/cliente/{id_cliente_path}/prestamos/{id_prestamo}/pagos")
 def obtener_pagos(id_prestamo: int, id_cliente_path: Optional[int] = None):
@@ -778,78 +904,58 @@ def obtener_pagos(id_prestamo: int, id_cliente_path: Optional[int] = None):
         cursor.close()
         db.close()
 
-# ── FIX PRINCIPAL ─────────────────────────────────────────────────────
-# Se eliminó el bloqueo del último pago. El cliente puede pagar cualquier
-# mensualidad incluyendo la última. La liquidación se detecta por conteo
-# de pagos pendientes (no por saldo == 0) para evitar bugs de decimales.
-# ─────────────────────────────────────────────────────────────────────
+
 @app.post("/cliente/registrar_pago")
 def registrar_pago_cliente(request: RegistrarPagoClienteRequest):
     db = conectar()
     cursor = db.cursor(dictionary=True)
     try:
-        # 1. Verificar que el pago existe
         cursor.execute("SELECT * FROM pagos WHERE id_pago = %s", (request.id_pago,))
         pago = cursor.fetchone()
         if not pago:
             raise HTTPException(status_code=404, detail="Pago no encontrado")
 
-        # 2. Seguridad: el pago debe pertenecer al cliente
         id_prestamo = pago['id_prestamo']
         cursor.execute("SELECT id_cliente FROM prestamos WHERE id_prestamo = %s", (id_prestamo,))
         prestamo = cursor.fetchone()
         if not prestamo or prestamo['id_cliente'] != request.id_cliente:
             raise HTTPException(status_code=403, detail="No tienes permiso para pagar este préstamo")
 
-        # 3. No repetir pagos
         if pago['estado'] == 'pagado':
             raise HTTPException(status_code=400, detail="Este pago ya fue registrado")
-        
-        # ── Orden secuencial: bloquear si hay mensualidades anteriores sin pagar ──
+
         cursor.execute("""
-            SELECT COUNT(*) AS bloqueantes
-            FROM pagos
-            WHERE id_prestamo = %s
-              AND numero_pago  < %s
-              AND estado      != 'pagado'
+            SELECT COUNT(*) AS bloqueantes FROM pagos
+            WHERE id_prestamo = %s AND numero_pago < %s AND estado != 'pagado'
         """, (id_prestamo, pago['numero_pago']))
         if int(cursor.fetchone().get('bloqueantes', 0) or 0) > 0:
             raise HTTPException(status_code=403,
                 detail="Debes pagar las mensualidades anteriores primero.")
 
         monto = float(pago['monto'])
-
-        # 4. Marcar pago como pagado
         cursor.execute(
             "UPDATE pagos SET estado='pagado', fecha_pago=NOW() WHERE id_pago = %s",
             (request.id_pago,)
         )
-
-        # 5. Reducir saldo del préstamo
         cursor.execute(
             "UPDATE prestamos SET saldo_pendiente = GREATEST(0, saldo_pendiente - %s) WHERE id_prestamo = %s",
             (monto, id_prestamo)
         )
-
-        # 6. Liquidar por conteo — evita falsos positivos por decimales residuales
         cursor.execute(
             "SELECT COUNT(*) AS pendientes FROM pagos WHERE id_prestamo = %s AND estado = 'pendiente'",
             (id_prestamo,)
         )
         liquidado = int(cursor.fetchone().get('pendientes', 0) or 0) == 0
-
         if liquidado:
             cursor.execute(
                 "UPDATE prestamos SET estado='LIQUIDADO', saldo_pendiente=0 WHERE id_prestamo = %s",
                 (id_prestamo,)
             )
 
-        # 7. Generar ticket
         import hashlib, time
         folio = f"TC-{request.id_pago}-{int(time.time())}"
         firma = hashlib.sha256(f"{request.id_pago}{monto}{time.time()}".encode()).hexdigest()[:64]
         metodo = (request.metodo_pago or "EFECTIVO").upper()
-
         cursor.execute("""
             INSERT INTO tickets_pagos
                 (folio, id_pago, metodo_pago, monto_pagado,
@@ -857,6 +963,26 @@ def registrar_pago_cliente(request: RegistrarPagoClienteRequest):
             VALUES (%s, %s, %s, %s, NOW(), %s, 'ACTIVO', %s)
         """, (folio, request.id_pago, metodo, monto, firma,
               'LIQUIDACION' if liquidado else 'PAGO'))
+
+        # ── Notificación en BD ────────────────────────────────────────────────
+        folio_prestamo = f"MSP-{id_prestamo}"
+        if liquidado:
+            _guardar_notificacion(
+                cursor, request.id_cliente,
+                "CREDITO_LIQUIDADO",
+                "¡Crédito liquidado! 🎉",
+                f"Has liquidado tu crédito {folio_prestamo}. ¡Felicidades!",
+                {"folio": folio_prestamo, "monto": monto}
+            )
+        else:
+            _guardar_notificacion(
+                cursor, request.id_cliente,
+                "PAGO_REGISTRADO",
+                "Pago registrado ✅",
+                f"Tu pago #{pago['numero_pago']} del crédito {folio_prestamo} "
+                f"por ${monto:,.2f} fue registrado correctamente.",
+                {"folio": folio_prestamo, "numero_pago": pago['numero_pago'], "monto": monto}
+            )
 
         db.commit()
         return {
@@ -874,6 +1000,7 @@ def registrar_pago_cliente(request: RegistrarPagoClienteRequest):
     finally:
         cursor.close()
         db.close()
+
 
 # ==================== CONFIGURACIÓN ====================
 
@@ -897,6 +1024,7 @@ def obtener_configuracion():
     finally:
         cursor.close()
         db.close()
+
 
 @app.put("/configuracion_sistema/{id_config}")
 def actualizar_configuracion(id_config: int, request: ConfiguracionRequest):
@@ -932,6 +1060,7 @@ def actualizar_configuracion(id_config: int, request: ConfiguracionRequest):
         cursor.close()
         db.close()
 
+
 # ==================== ENDPOINTS ADMIN ====================
 
 @app.get("/admin/prestamos_pendientes")
@@ -963,31 +1092,45 @@ def obtener_prestamos_pendientes():
         cursor.close()
         db.close()
 
+
 @app.post("/admin/aprobar_prestamo")
-def procesar_prestamo(request: AprobarPrestamoRequest):
-    from datetime import date, timedelta
+def procesar_prestamo(request: AprobarPrestamoRequest, background_tasks: BackgroundTasks):
+    from datetime import date
     if request.accion not in ["aprobar", "rechazar"]:
         raise HTTPException(status_code=400, detail="Acción inválida. Usa 'aprobar' o 'rechazar'")
     db = conectar()
     cursor = db.cursor(dictionary=True)
     try:
-        cursor.execute("SELECT * FROM prestamos WHERE id_prestamo = %s", (request.id_prestamo,))
+        # ── Obtener préstamo + datos del cliente ──────────────────────────────
+        cursor.execute("""
+            SELECT p.*,
+                   u.nombre, u.apellido_paterno, u.email AS email_cliente,
+                   u.id_usuario AS id_cliente
+            FROM prestamos p
+            JOIN usuarios u ON p.id_cliente = u.id_usuario
+            WHERE p.id_prestamo = %s
+        """, (request.id_prestamo,))
         prestamo = cursor.fetchone()
         if not prestamo:
             raise HTTPException(status_code=404, detail="Préstamo no encontrado")
         if prestamo['estado'] != 'PENDIENTE':
             raise HTTPException(status_code=400, detail="El préstamo no está en estado PENDIENTE")
 
+        id_cliente     = prestamo['id_cliente']
+        email_cliente  = prestamo['email_cliente']
+        nombre_cliente = f"{prestamo['nombre']} {prestamo.get('apellido_paterno', '')}".strip()
+        folio          = f"MSP-{request.id_prestamo}"
+
         if request.accion == "aprobar":
             capital = float(prestamo['monto_total'])
             plazo   = int(prestamo['plazo_meses'])
             tasa    = float(prestamo['tasa_interes'])
 
-            cuota         = capital * (tasa * (1 + tasa)**plazo) / ((1 + tasa)**plazo - 1)
-            cuota_normal  = round(cuota, 2)
-            saldo_total   = round(cuota * plazo, 2)
-            ultimo_pago   = round(saldo_total - cuota_normal * (plazo - 1), 2)
-            hoy           = date.today()
+            cuota        = capital * (tasa * (1 + tasa)**plazo) / ((1 + tasa)**plazo - 1)
+            cuota_normal = round(cuota, 2)
+            saldo_total  = round(cuota * plazo, 2)
+            ultimo_pago  = round(saldo_total - cuota_normal * (plazo - 1), 2)
+            hoy          = date.today()
 
             cursor.execute("""
                 UPDATE prestamos
@@ -1004,7 +1147,27 @@ def procesar_prestamo(request: AprobarPrestamoRequest):
                     VALUES (%s, %s, %s, %s, 'pendiente')
                 """, (request.id_prestamo, i, fecha_venc, monto_pago))
 
+            # ── Notificación en tabla ─────────────────────────────────────────
+            _guardar_notificacion(
+                cursor, id_cliente,
+                "CREDITO_APROBADO",
+                "¡Crédito aprobado! ✅",
+                f"Tu crédito {folio} por ${capital:,.2f} fue aprobado. "
+                f"Cuota mensual: ${cuota_normal:,.2f} por {plazo} meses.",
+                {"folio": folio, "monto": capital,
+                 "plazo": plazo, "cuota": cuota_normal,
+                 "id_prestamo": request.id_prestamo}
+            )
+
             db.commit()
+
+            # ── Email en background (no bloquea la respuesta) ─────────────────
+            background_tasks.add_task(
+                _bg_email_aprobado,
+                email_cliente, nombre_cliente, folio,
+                capital, plazo, cuota_normal
+            )
+
             return {
                 "status":        "success",
                 "message":       f"Préstamo aprobado. Se generaron {plazo} pagos.",
@@ -1012,13 +1175,34 @@ def procesar_prestamo(request: AprobarPrestamoRequest):
                 "ultimo_pago":   ultimo_pago,
                 "total_a_pagar": saldo_total
             }
-        else:
+
+        else:  # rechazar
             cursor.execute(
                 "UPDATE prestamos SET estado='RECHAZADO', id_aprobador=%s WHERE id_prestamo=%s",
                 (request.id_empleado, request.id_prestamo)
             )
+
+            # ── Notificación en tabla ─────────────────────────────────────────
+            _guardar_notificacion(
+                cursor, id_cliente,
+                "CREDITO_RECHAZADO",
+                "Solicitud rechazada ❌",
+                f"Tu solicitud {folio} por ${float(prestamo['monto_total']):,.2f} "
+                f"no pudo ser aprobada. Puedes intentarlo nuevamente.",
+                {"folio": folio, "monto": float(prestamo['monto_total'])}
+            )
+
             db.commit()
+
+            # ── Email en background ───────────────────────────────────────────
+            background_tasks.add_task(
+                _bg_email_rechazado,
+                email_cliente, nombre_cliente, folio,
+                float(prestamo['monto_total'])
+            )
+
             return {"status": "success", "message": "Préstamo rechazado."}
+
     except HTTPException:
         raise
     except Exception as e:
@@ -1027,6 +1211,7 @@ def procesar_prestamo(request: AprobarPrestamoRequest):
     finally:
         cursor.close()
         db.close()
+
 
 @app.get("/admin/folios")
 def obtener_folios_admin(fecha: Optional[str] = Query(None)):
@@ -1067,6 +1252,7 @@ def obtener_folios_admin(fecha: Optional[str] = Query(None)):
         cursor.close()
         db.close()
 
+
 @app.get("/admin/estadisticas")
 def obtener_estadisticas():
     db = conectar()
@@ -1086,6 +1272,7 @@ def obtener_estadisticas():
     finally:
         cursor.close()
         db.close()
+
 
 @app.post("/admin/crear_empleado")
 def crear_empleado(request: CrearEmpleadoRequest):
@@ -1115,6 +1302,7 @@ def crear_empleado(request: CrearEmpleadoRequest):
         cursor.close()
         db.close()
 
+
 @app.put("/admin/usuario/{id_usuario}")
 def editar_usuario_admin(id_usuario: int, request: EditarUsuarioAdminRequest):
     db = conectar()
@@ -1122,13 +1310,13 @@ def editar_usuario_admin(id_usuario: int, request: EditarUsuarioAdminRequest):
     try:
         campos  = []
         valores = []
-        if request.nombre           is not None: campos.append("nombre=%s");            valores.append(request.nombre)
-        if request.apellido_paterno is not None: campos.append("apellido_paterno=%s");  valores.append(request.apellido_paterno)
-        if request.apellido_materno is not None: campos.append("apellido_materno=%s");  valores.append(request.apellido_materno)
-        if request.telefono         is not None: campos.append("telefono=%s");          valores.append(request.telefono)
-        if request.direccion        is not None: campos.append("direccion=%s");         valores.append(request.direccion)
-        if request.curp             is not None: campos.append("curp=%s");              valores.append(request.curp)
-        if request.no_identificacion is not None: campos.append("no_identificacion=%s"); valores.append(request.no_identificacion)
+        if request.nombre            is not None: campos.append("nombre=%s");             valores.append(request.nombre)
+        if request.apellido_paterno  is not None: campos.append("apellido_paterno=%s");   valores.append(request.apellido_paterno)
+        if request.apellido_materno  is not None: campos.append("apellido_materno=%s");   valores.append(request.apellido_materno)
+        if request.telefono          is not None: campos.append("telefono=%s");           valores.append(request.telefono)
+        if request.direccion         is not None: campos.append("direccion=%s");          valores.append(request.direccion)
+        if request.curp              is not None: campos.append("curp=%s");               valores.append(request.curp)
+        if request.no_identificacion is not None: campos.append("no_identificacion=%s");  valores.append(request.no_identificacion)
         if not campos:
             raise HTTPException(status_code=400, detail="No se enviaron campos para actualizar")
         query = f"UPDATE usuarios SET {', '.join(campos)} WHERE id_usuario = %s"
@@ -1146,6 +1334,7 @@ def editar_usuario_admin(id_usuario: int, request: EditarUsuarioAdminRequest):
     finally:
         cursor.close()
         db.close()
+
 
 @app.put("/admin/usuario/{id_usuario}/estado")
 def cambiar_estado_usuario(id_usuario: int, activo: bool = Query(...)):
@@ -1166,6 +1355,7 @@ def cambiar_estado_usuario(id_usuario: int, activo: bool = Query(...)):
         cursor.close()
         db.close()
 
+
 # ==================== ENDPOINTS EMPLEADO ====================
 
 @app.post("/empleado/registrar_pago")
@@ -1183,13 +1373,17 @@ def registrar_pago(request: RegistrarPagoRequest):
         monto       = float(pago['monto'])
         id_prestamo = pago['id_prestamo']
 
+        # Obtener id_cliente para la notificación
+        cursor.execute("SELECT id_cliente FROM prestamos WHERE id_prestamo = %s", (id_prestamo,))
+        p_row      = cursor.fetchone()
+        id_cliente = p_row['id_cliente'] if p_row else None
+
         cursor.execute("UPDATE pagos SET estado='pagado', fecha_pago=NOW() WHERE id_pago=%s", (request.id_pago,))
         cursor.execute("""
             UPDATE prestamos SET saldo_pendiente = GREATEST(0, saldo_pendiente - %s)
             WHERE id_prestamo = %s
         """, (monto, id_prestamo))
 
-        # Liquidar por conteo — no por saldo == 0
         cursor.execute(
             "SELECT COUNT(*) AS pendientes FROM pagos WHERE id_prestamo = %s AND estado = 'pendiente'",
             (id_prestamo,)
@@ -1212,6 +1406,28 @@ def registrar_pago(request: RegistrarPagoRequest):
         """, (folio, request.id_pago, request.id_empleado, monto, firma,
               'LIQUIDACION' if liquidado else 'PAGO'))
 
+        # ── Notificación en BD ────────────────────────────────────────────────
+        if id_cliente:
+            folio_prestamo = f"MSP-{id_prestamo}"
+            if liquidado:
+                _guardar_notificacion(
+                    cursor, id_cliente,
+                    "CREDITO_LIQUIDADO",
+                    "¡Crédito liquidado! 🎉",
+                    f"Has liquidado tu crédito {folio_prestamo}. ¡Felicidades!",
+                    {"folio": folio_prestamo, "monto": monto}
+                )
+            else:
+                _guardar_notificacion(
+                    cursor, id_cliente,
+                    "PAGO_REGISTRADO",
+                    "Pago registrado ✅",
+                    f"Tu pago #{pago['numero_pago']} del crédito {folio_prestamo} "
+                    f"por ${monto:,.2f} fue registrado.",
+                    {"folio": folio_prestamo,
+                     "numero_pago": pago['numero_pago'], "monto": monto}
+                )
+
         db.commit()
         return {
             "status":      "success",
@@ -1228,6 +1444,7 @@ def registrar_pago(request: RegistrarPagoRequest):
     finally:
         cursor.close()
         db.close()
+
 
 @app.get("/empleado/pagos_pendientes")
 def obtener_pagos_pendientes():
@@ -1261,6 +1478,7 @@ def obtener_pagos_pendientes():
     finally:
         cursor.close()
         db.close()
+
 
 @app.get("/empleado/corte_caja")
 def obtener_corte_caja(id_empleado: int = Query(...), fecha: Optional[str] = Query(None)):
@@ -1304,6 +1522,7 @@ def obtener_corte_caja(id_empleado: int = Query(...), fecha: Optional[str] = Que
     finally:
         cursor.close()
         db.close()
+
 
 @app.get("/tickets/{folio}")
 def buscar_ticket(folio: str):
@@ -1354,19 +1573,14 @@ def buscar_ticket(folio: str):
         cursor.close()
         db.close()
 
+
 @app.get("/cliente/{id_cliente}/elegibilidad")
 def verificar_elegibilidad(id_cliente: int):
-    """
-    Consultado por la app Android al entrar a la pantalla de solicitud
-    y cada vez que vuelve al foco (Lifecycle.RESUMED).
-    Si puede_solicitar=false la pantalla muestra bloqueo y no permite operar.
-    """
     db     = conectar()
     cursor = db.cursor(dictionary=True)
     try:
         cursor.execute("""
-            SELECT COUNT(*) AS activos
-            FROM prestamos
+            SELECT COUNT(*) AS activos FROM prestamos
             WHERE id_cliente = %s AND estado IN ('ACTIVO', 'MOROSO', 'PENDIENTE')
         """, (id_cliente,))
         activos = int(cursor.fetchone().get('activos', 0) or 0)
@@ -1380,15 +1594,12 @@ def verificar_elegibilidad(id_cliente: int):
             }
 
         cursor.execute("""
-            SELECT p.plazo_meses,
-                   COUNT(g.id_pago) AS pagados
+            SELECT p.plazo_meses, COUNT(g.id_pago) AS pagados
             FROM prestamos p
-            LEFT JOIN pagos g
-                   ON g.id_prestamo = p.id_prestamo AND g.estado = 'pagado'
+            LEFT JOIN pagos g ON g.id_prestamo = p.id_prestamo AND g.estado = 'pagado'
             WHERE p.id_cliente = %s AND p.estado IN ('ACTIVO', 'MOROSO')
             GROUP BY p.id_prestamo, p.plazo_meses
-            ORDER BY p.fecha_aprobacion DESC
-            LIMIT 1
+            ORDER BY p.fecha_aprobacion DESC LIMIT 1
         """, (id_cliente,))
         rec = cursor.fetchone()
 
@@ -1406,7 +1617,6 @@ def verificar_elegibilidad(id_cliente: int):
 
         return {"puede_solicitar": True, "motivo": None,
                 "pagos_realizados": None, "plazo_meses": None}
-
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
     finally:
@@ -1414,8 +1624,89 @@ def verificar_elegibilidad(id_cliente: int):
         db.close()
 
 
+# ==================== ENDPOINTS NOTIFICACIONES ====================
 
-# PAYPAL — SANDBOX
+@app.get("/notificaciones/{id_usuario}")
+def obtener_notificaciones(id_usuario: int, solo_no_leidas: bool = Query(False), limite: int = Query(50)):
+    db = conectar()
+    cursor = db.cursor(dictionary=True)
+    try:
+        where = "WHERE id_usuario = %s"
+        params = [id_usuario]
+        if solo_no_leidas:
+            where += " AND leida = 0"
+        cursor.execute(
+            f"SELECT * FROM notificaciones {where} ORDER BY fecha_creacion DESC LIMIT %s",
+            (*params, limite)
+        )
+        notifs = cursor.fetchall()
+        for n in notifs:
+            if n.get('fecha_creacion') and hasattr(n['fecha_creacion'], 'isoformat'):
+                n['fecha_creacion'] = n['fecha_creacion'].isoformat()
+            n['leida'] = bool(n.get('leida', False))
+        return {"status": "success", "total": len(notifs), "notificaciones": notifs}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        cursor.close()
+        db.close()
+
+
+@app.get("/notificaciones/{id_usuario}/no_leidas")
+def contar_no_leidas(id_usuario: int):
+    db = conectar()
+    cursor = db.cursor()
+    try:
+        cursor.execute(
+            "SELECT COUNT(*) FROM notificaciones WHERE id_usuario = %s AND leida = 0",
+            (id_usuario,)
+        )
+        count = cursor.fetchone()[0]
+        return {"status": "success", "no_leidas": count}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        cursor.close()
+        db.close()
+
+
+@app.put("/notificaciones/{id_notificacion}/leida")
+def marcar_leida(id_notificacion: int):
+    db = conectar()
+    cursor = db.cursor()
+    try:
+        cursor.execute(
+            "UPDATE notificaciones SET leida = 1 WHERE id_notificacion = %s",
+            (id_notificacion,)
+        )
+        db.commit()
+        return {"status": "success"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        cursor.close()
+        db.close()
+
+
+@app.put("/notificaciones/{id_usuario}/todas_leidas")
+def marcar_todas_leidas(id_usuario: int):
+    db = conectar()
+    cursor = db.cursor()
+    try:
+        cursor.execute(
+            "UPDATE notificaciones SET leida = 1 WHERE id_usuario = %s AND leida = 0",
+            (id_usuario,)
+        )
+        db.commit()
+        return {"status": "success", "actualizadas": cursor.rowcount}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        cursor.close()
+        db.close()
+
+
+# ==================== PAYPAL ====================
 
 import time
 import requests as http_requests
@@ -1434,22 +1725,11 @@ RAILWAY_DOMAIN    = os.environ.get("RAILWAY_PUBLIC_DOMAIN", "")
 PAYPAL_RETURN_URL = f"https://{RAILWAY_DOMAIN}/pagos/paypal/retorno"
 PAYPAL_CANCEL_URL = f"https://{RAILWAY_DOMAIN}/pagos/paypal/cancelar"
 
-# ── Cache del token en memoria del proceso ────────────────────────
-# Se comparte entre todos los requests del mismo worker de Railway
-_paypal_token_cache = {
-    "access_token": None,
-    "expires_at":   0       # timestamp unix
-}
+_paypal_token_cache = {"access_token": None, "expires_at": 0}
 
 def _paypal_access_token() -> str:
-    """
-    Devuelve el token cacheado si aún es válido (con 5 min de margen).
-    Si expiró o no existe, genera uno nuevo y lo cachea.
-    Así crear-orden y capturar siempre usan el mismo token.
-    """
-    ahora = time.time()
-    margen = 300  # 5 minutos de seguridad antes de expirar
-
+    ahora  = time.time()
+    margen = 300
     if (
         _paypal_token_cache["access_token"] and
         ahora < _paypal_token_cache["expires_at"] - margen
@@ -1457,7 +1737,6 @@ def _paypal_access_token() -> str:
         print(f"PAYPAL TOKEN → usando cacheado, expira en {int(_paypal_token_cache['expires_at'] - ahora)}s")
         return _paypal_token_cache["access_token"]
 
-    # Generar token nuevo
     response = http_requests.post(
         f"{PAYPAL_BASE}/v1/oauth2/token",
         auth=(PAYPAL_CLIENT_ID, PAYPAL_SECRET),
@@ -1473,12 +1752,9 @@ def _paypal_access_token() -> str:
     data = response.json()
     _paypal_token_cache["access_token"] = data["access_token"]
     _paypal_token_cache["expires_at"]   = ahora + data.get("expires_in", 32400)
-
     print(f"PAYPAL AUTH → token nuevo generado, válido por {data.get('expires_in', 32400)}s")
     return _paypal_token_cache["access_token"]
 
-
-# ── Redirecciones ─────────────────────────────────────────────────
 
 from fastapi.responses import RedirectResponse
 
@@ -1492,21 +1768,15 @@ def paypal_cancelar():
     return RedirectResponse(url="com.moon.casaprestamo://paypalpay/cancel")
 
 
-# ── Modelos ───────────────────────────────────────────────────────
-
 class PaypalOrdenRequest(BaseModel):
     id_pago:    int
     id_cliente: int
 
 class PaypalCapturarRequest(BaseModel):
-    token:      str   # order_id de PayPal
+    token:      str
     id_pago:    int
     id_cliente: int
 
-
-# ══════════════════════════════════════════════════════════════════
-# ENDPOINT 1 — Crear orden
-# ══════════════════════════════════════════════════════════════════
 
 @app.post("/pagos/paypal/crear-orden")
 def crear_orden_paypal(request: PaypalOrdenRequest):
@@ -1538,7 +1808,7 @@ def crear_orden_paypal(request: PaypalOrdenRequest):
                 detail="Debes pagar las mensualidades anteriores primero.")
 
         monto        = float(pago["monto"])
-        token_acceso = _paypal_access_token()  # cacheado
+        token_acceso = _paypal_access_token()
 
         orden_response = http_requests.post(
             f"{PAYPAL_BASE}/v2/checkout/orders",
@@ -1547,10 +1817,7 @@ def crear_orden_paypal(request: PaypalOrdenRequest):
                 "purchase_units": [{
                     "reference_id": str(request.id_pago),
                     "description":  f"Mensualidad #{pago['numero_pago']} - Monte sin Piedad",
-                    "amount": {
-                        "currency_code": "MXN",
-                        "value": f"{monto:.2f}"
-                    }
+                    "amount": {"currency_code": "MXN", "value": f"{monto:.2f}"}
                 }],
                 "application_context": {
                     "brand_name":          "Monte sin Piedad",
@@ -1567,9 +1834,7 @@ def crear_orden_paypal(request: PaypalOrdenRequest):
             },
             timeout=15
         )
-
         print(f"PAYPAL ORDEN → status={orden_response.status_code}")
-
         if orden_response.status_code not in (200, 201):
             raise HTTPException(status_code=502,
                 detail=f"PayPal error al crear orden: {orden_response.text}")
@@ -1590,7 +1855,6 @@ def crear_orden_paypal(request: PaypalOrdenRequest):
             "monto":        monto,
             "numero_pago":  pago["numero_pago"]
         }
-
     except HTTPException:
         raise
     except Exception as e:
@@ -1599,11 +1863,6 @@ def crear_orden_paypal(request: PaypalOrdenRequest):
         cursor.close()
         db.close()
 
-
-# ══════════════════════════════════════════════════════════════════
-# ENDPOINT 2 — Capturar pago
-# Usa el mismo token cacheado que usó crear-orden
-# ══════════════════════════════════════════════════════════════════
 
 @app.post("/pagos/paypal/capturar")
 def capturar_pago_paypal(request: PaypalCapturarRequest):
@@ -1635,9 +1894,9 @@ def capturar_pago_paypal(request: PaypalCapturarRequest):
 
         monto        = float(pago["monto"])
         id_prestamo  = pago["id_prestamo"]
-        token_acceso = _paypal_access_token()  # mismo token cacheado
+        token_acceso = _paypal_access_token()
 
-        print(f"PAYPAL CAPTURA → intentando capturar orden {request.token} con token {token_acceso[:20]}...")
+        print(f"PAYPAL CAPTURA → intentando capturar orden {request.token}")
         captura_response = http_requests.post(
             f"{PAYPAL_BASE}/v2/checkout/orders/{request.token}/capture",
             headers={
@@ -1647,13 +1906,11 @@ def capturar_pago_paypal(request: PaypalCapturarRequest):
             json={},
             timeout=15
         )
-
-        print(f"PAYPAL CAPTURA → status={captura_response.status_code} body={captura_response.text}")
+        print(f"PAYPAL CAPTURA → status={captura_response.status_code}")
 
         if captura_response.status_code == 422:
             raise HTTPException(status_code=400,
                 detail="Este pago ya fue procesado en PayPal. Recarga tu cartera.")
-
         if captura_response.status_code not in (200, 201):
             raise HTTPException(status_code=502,
                 detail=f"PayPal error al capturar: {captura_response.text}")
@@ -1663,7 +1920,6 @@ def capturar_pago_paypal(request: PaypalCapturarRequest):
             raise HTTPException(status_code=400,
                 detail=f"El pago no fue completado. Estado PayPal: {estado_final}")
 
-        # Registrar en BD
         cursor.execute(
             "UPDATE pagos SET estado='pagado', fecha_pago=NOW() WHERE id_pago = %s",
             (request.id_pago,)
@@ -1696,6 +1952,27 @@ def capturar_pago_paypal(request: PaypalCapturarRequest):
         """, (folio, request.id_pago, monto, firma,
               "LIQUIDACION" if liquidado else "PAGO"))
 
+        # ── Notificación en BD ────────────────────────────────────────────────
+        folio_prestamo = f"MSP-{id_prestamo}"
+        if liquidado:
+            _guardar_notificacion(
+                cursor, request.id_cliente,
+                "CREDITO_LIQUIDADO",
+                "¡Crédito liquidado! 🎉",
+                f"Has liquidado tu crédito {folio_prestamo} vía PayPal. ¡Felicidades!",
+                {"folio": folio_prestamo, "monto": monto}
+            )
+        else:
+            _guardar_notificacion(
+                cursor, request.id_cliente,
+                "PAGO_REGISTRADO",
+                "Pago registrado ✅",
+                f"Tu pago #{pago['numero_pago']} del crédito {folio_prestamo} "
+                f"por ${monto:,.2f} fue registrado vía PayPal.",
+                {"folio": folio_prestamo,
+                 "numero_pago": pago['numero_pago'], "monto": monto}
+            )
+
         db.commit()
         return {
             "status":      "success",
@@ -1705,7 +1982,6 @@ def capturar_pago_paypal(request: PaypalCapturarRequest):
             "liquidado":   liquidado,
             "folio":       folio
         }
-
     except HTTPException:
         raise
     except Exception as e:
@@ -1714,7 +1990,8 @@ def capturar_pago_paypal(request: PaypalCapturarRequest):
     finally:
         cursor.close()
         db.close()
-        
+
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)

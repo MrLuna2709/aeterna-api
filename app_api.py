@@ -674,7 +674,6 @@ class EditarUsuarioAdminRequest(BaseModel):
 class RegistrarPagoRequest(BaseModel):
     id_pago:     int
     id_empleado: Optional[int] = None
-    metodo_pago: Optional[str] = "EFECTIVO"
 
 class RegistrarPagoClienteRequest(BaseModel):
     id_pago: int
@@ -915,16 +914,16 @@ def registrar_pago_cliente(request: RegistrarPagoClienteRequest):
         pago = cursor.fetchone()
         if not pago:
             raise HTTPException(status_code=404, detail="Pago no encontrado")
-
+ 
         id_prestamo = pago['id_prestamo']
         cursor.execute("SELECT id_cliente FROM prestamos WHERE id_prestamo = %s", (id_prestamo,))
         prestamo = cursor.fetchone()
         if not prestamo or prestamo['id_cliente'] != request.id_cliente:
             raise HTTPException(status_code=403, detail="No tienes permiso para pagar este préstamo")
-
+ 
         if pago['estado'] == 'pagado':
             raise HTTPException(status_code=400, detail="Este pago ya fue registrado")
-
+ 
         cursor.execute("""
             SELECT COUNT(*) AS bloqueantes FROM pagos
             WHERE id_prestamo = %s AND numero_pago < %s AND estado != 'pagado'
@@ -932,7 +931,7 @@ def registrar_pago_cliente(request: RegistrarPagoClienteRequest):
         if int(cursor.fetchone().get('bloqueantes', 0) or 0) > 0:
             raise HTTPException(status_code=403,
                 detail="Debes pagar las mensualidades anteriores primero.")
-
+ 
         monto = float(pago['monto'])
         cursor.execute(
             "UPDATE pagos SET estado='pagado', fecha_pago=NOW() WHERE id_pago = %s",
@@ -952,11 +951,15 @@ def registrar_pago_cliente(request: RegistrarPagoClienteRequest):
                 "UPDATE prestamos SET estado='LIQUIDADO', saldo_pendiente=0 WHERE id_prestamo = %s",
                 (id_prestamo,)
             )
-
+ 
         import hashlib, time
         folio = f"TC-{request.id_pago}-{int(time.time())}"
         firma = hashlib.sha256(f"{request.id_pago}{monto}{time.time()}".encode()).hexdigest()[:64]
-        metodo = (request.metodo_pago or "EFECTIVO").upper()
+ 
+        # Mapear método: PAYPAL → TARJETA (ENUM de BD no tiene PAYPAL)
+        metodo_raw = (request.metodo_pago or "EFECTIVO").upper()
+        metodo     = "TARJETA" if metodo_raw == "PAYPAL" else metodo_raw
+ 
         cursor.execute("""
             INSERT INTO tickets_pagos
                 (folio, id_pago, metodo_pago, monto_pagado,
@@ -964,8 +967,8 @@ def registrar_pago_cliente(request: RegistrarPagoClienteRequest):
             VALUES (%s, %s, %s, %s, NOW(), %s, 'ACTIVO', %s)
         """, (folio, request.id_pago, metodo, monto, firma,
               'LIQUIDACION' if liquidado else 'PAGO'))
-
-        # ── Notificación en BD ────────────────────────────────────────────────
+ 
+        # Notificación en BD
         folio_prestamo = f"MSP-{id_prestamo}"
         if liquidado:
             _guardar_notificacion(
@@ -984,7 +987,7 @@ def registrar_pago_cliente(request: RegistrarPagoClienteRequest):
                 f"por ${monto:,.2f} fue registrado correctamente.",
                 {"folio": folio_prestamo, "numero_pago": pago['numero_pago'], "monto": monto}
             )
-
+ 
         db.commit()
         return {
             "status":      "success",
@@ -1001,6 +1004,7 @@ def registrar_pago_cliente(request: RegistrarPagoClienteRequest):
     finally:
         cursor.close()
         db.close()
+ 
 
 
 # ==================== CONFIGURACIÓN ====================
@@ -1361,7 +1365,6 @@ def cambiar_estado_usuario(id_usuario: int, activo: bool = Query(...)):
 
 @app.post("/empleado/registrar_pago")
 def registrar_pago(request: RegistrarPagoRequest):
-    print(f"REGISTRAR PAGO → id_pago={request.id_pago} id_empleado={request.id_empleado} metodo={request.metodo_pago}")
     db = conectar()
     cursor = db.cursor(dictionary=True)
     try:
@@ -1371,21 +1374,21 @@ def registrar_pago(request: RegistrarPagoRequest):
             raise HTTPException(status_code=404, detail="Pago no encontrado")
         if pago['estado'] == 'pagado':
             raise HTTPException(status_code=400, detail="Este pago ya fue registrado")
-
+ 
         monto       = float(pago['monto'])
         id_prestamo = pago['id_prestamo']
-
+ 
         # Obtener id_cliente para la notificación
         cursor.execute("SELECT id_cliente FROM prestamos WHERE id_prestamo = %s", (id_prestamo,))
         p_row      = cursor.fetchone()
         id_cliente = p_row['id_cliente'] if p_row else None
-
+ 
         cursor.execute("UPDATE pagos SET estado='pagado', fecha_pago=NOW() WHERE id_pago=%s", (request.id_pago,))
         cursor.execute("""
             UPDATE prestamos SET saldo_pendiente = GREATEST(0, saldo_pendiente - %s)
             WHERE id_prestamo = %s
         """, (monto, id_prestamo))
-
+ 
         cursor.execute(
             "SELECT COUNT(*) AS pendientes FROM pagos WHERE id_prestamo = %s AND estado = 'pendiente'",
             (id_prestamo,)
@@ -1396,22 +1399,24 @@ def registrar_pago(request: RegistrarPagoRequest):
                 "UPDATE prestamos SET estado='LIQUIDADO', saldo_pendiente=0 WHERE id_prestamo=%s",
                 (id_prestamo,)
             )
-
+ 
         import hashlib, time
         folio = f"T-{request.id_pago}-{int(time.time())}"
         firma = hashlib.sha256(f"{request.id_pago}{monto}{time.time()}".encode()).hexdigest()[:64]
-        # DESPUÉS:
-        metodo     = (request.metodo_pago or "EFECTIVO").upper()
-        id_empleado = request.id_empleado  # puede ser None, la BD lo acepta nullable
+ 
+        # Mapear método: PAYPAL → TARJETA (ENUM de BD no tiene PAYPAL)
+        metodo_raw = (request.metodo_pago or "EFECTIVO").upper()
+        metodo     = "TARJETA" if metodo_raw == "PAYPAL" else metodo_raw
+ 
         cursor.execute("""
             INSERT INTO tickets_pagos
                 (folio, id_pago, id_empleado, metodo_pago, monto_pagado,
                  fecha_generacion, firma_digital, estado, tipo)
             VALUES (%s, %s, %s, %s, %s, NOW(), %s, 'ACTIVO', %s)
-        """, (folio, request.id_pago, id_empleado, metodo, monto, firma,
+        """, (folio, request.id_pago, request.id_empleado, metodo, monto, firma,
               'LIQUIDACION' if liquidado else 'PAGO'))
-
-        # ── Notificación en BD ────────────────────────────────────────────────
+ 
+        # Notificación en BD
         if id_cliente:
             folio_prestamo = f"MSP-{id_prestamo}"
             if liquidado:
@@ -1432,7 +1437,7 @@ def registrar_pago(request: RegistrarPagoRequest):
                     {"folio": folio_prestamo,
                      "numero_pago": pago['numero_pago'], "monto": monto}
                 )
-
+ 
         db.commit()
         return {
             "status":      "success",

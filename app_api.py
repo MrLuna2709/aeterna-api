@@ -1367,7 +1367,6 @@ def registrar_pago(request: RegistrarPagoRequest):
     try:
         cursor.execute("SELECT * FROM pagos WHERE id_pago = %s", (request.id_pago,))
         pago = cursor.fetchone()
-        print(f"PAGO ENCONTRADO → {pago}")
         if not pago:
             raise HTTPException(status_code=404, detail="Pago no encontrado")
         if pago['estado'] == 'pagado':
@@ -1444,9 +1443,8 @@ def registrar_pago(request: RegistrarPagoRequest):
         }
     except HTTPException:
         raise
-   except Exception as e:
+    except Exception as e:
         db.rollback()
-        print(f"ERROR DETALLE → {type(e).__name__}: {e}")
         raise HTTPException(status_code=500, detail=str(e))
     finally:
         cursor.close()

@@ -1361,6 +1361,7 @@ def cambiar_estado_usuario(id_usuario: int, activo: bool = Query(...)):
 
 @app.post("/empleado/registrar_pago")
 def registrar_pago(request: RegistrarPagoRequest):
+    print(f"REGISTRAR PAGO → id_pago={request.id_pago} id_empleado={request.id_empleado} metodo={request.metodo_pago}")
     db = conectar()
     cursor = db.cursor(dictionary=True)
     try:

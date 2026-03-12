@@ -672,8 +672,9 @@ class EditarUsuarioAdminRequest(BaseModel):
     no_identificacion: Optional[str] = None
 
 class RegistrarPagoRequest(BaseModel):
-    id_pago: int
-    id_empleado: int
+    id_pago:     int
+    id_empleado: Optional[int] = None
+    metodo_pago: Optional[str] = "EFECTIVO"
 
 class RegistrarPagoClienteRequest(BaseModel):
     id_pago: int
@@ -1398,12 +1399,15 @@ def registrar_pago(request: RegistrarPagoRequest):
         import hashlib, time
         folio = f"T-{request.id_pago}-{int(time.time())}"
         firma = hashlib.sha256(f"{request.id_pago}{monto}{time.time()}".encode()).hexdigest()[:64]
+        # DESPUÉS:
+        metodo     = (request.metodo_pago or "EFECTIVO").upper()
+        id_empleado = request.id_empleado  # puede ser None, la BD lo acepta nullable
         cursor.execute("""
             INSERT INTO tickets_pagos
                 (folio, id_pago, id_empleado, metodo_pago, monto_pagado,
                  fecha_generacion, firma_digital, estado, tipo)
-            VALUES (%s, %s, %s, 'EFECTIVO', %s, NOW(), %s, 'ACTIVO', %s)
-        """, (folio, request.id_pago, request.id_empleado, monto, firma,
+            VALUES (%s, %s, %s, %s, %s, NOW(), %s, 'ACTIVO', %s)
+        """, (folio, request.id_pago, id_empleado, metodo, monto, firma,
               'LIQUIDACION' if liquidado else 'PAGO'))
 
         # ── Notificación en BD ────────────────────────────────────────────────

@@ -723,6 +723,7 @@ class EditarUsuarioAdminRequest(BaseModel):
 class RegistrarPagoRequest(BaseModel):
     id_pago:     int
     id_empleado: Optional[int] = None
+    metodo_pago: Optional[str] = "EFECTIVO"
 
 class RegistrarPagoClienteRequest(BaseModel):
     id_pago: int

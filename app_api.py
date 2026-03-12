@@ -175,7 +175,56 @@ def email_bienvenida(destinatario: str, nombre: str):
     </body></html>"""
     return enviar_email_resend(destinatario, f"🎉 ¡Bienvenido a Monte sin Piedad, {nombre}!", html)
 
+def email_pago_registrado(destinatario: str, nombre: str, folio: str, numero_pago: int, monto: float):
+    html = f"""<!DOCTYPE html><html><head><meta charset="UTF-8"></head>
+    <body style="font-family:Arial,sans-serif;background:#f1f5f9;margin:0;padding:20px;">
+    <div style="max-width:500px;margin:auto;background:#fff;border-radius:16px;overflow:hidden;box-shadow:0 4px 6px rgba(0,0,0,0.1);">
+      <div style="background:linear-gradient(135deg,#10b981,#059669);padding:40px;text-align:center;">
+        <div style="font-size:60px;">💳</div>
+        <h1 style="color:white;margin:8px 0 0;">PAGO REGISTRADO</h1>
+      </div>
+      <div style="padding:40px 30px;">
+        <p style="color:#475569;">Hola <strong>{nombre}</strong>,</p>
+        <p style="color:#475569;">Tu pago <strong>#{numero_pago}</strong> del crédito <strong>{folio}</strong> fue registrado correctamente.</p>
+        <div style="background:#f8fafc;border:2px solid #e2e8f0;border-radius:12px;padding:30px;text-align:center;margin:30px 0;">
+          <div style="color:#64748b;font-size:14px;">Monto pagado</div>
+          <div style="font-size:36px;font-weight:900;color:#10b981;">${monto:,.2f}</div>
+        </div>
+      </div>
+      <div style="text-align:center;padding:20px;font-size:12px;color:#94a3b8;border-top:1px solid #e2e8f0;">
+        <p>© {datetime.now().year} Monte sin Piedad</p>
+      </div>
+    </div></body></html>"""
+    try:
+        enviar_email_resend(destinatario, f"💳 Pago #{numero_pago} registrado — {folio}", html)
+    except Exception as e:
+        print(f"⚠️ Email pago no enviado: {e}")
 
+
+def email_credito_liquidado(destinatario: str, nombre: str, folio: str):
+    html = f"""<!DOCTYPE html><html><head><meta charset="UTF-8"></head>
+    <body style="font-family:Arial,sans-serif;background:#f1f5f9;margin:0;padding:20px;">
+    <div style="max-width:500px;margin:auto;background:#fff;border-radius:16px;overflow:hidden;box-shadow:0 4px 6px rgba(0,0,0,0.1);">
+      <div style="background:linear-gradient(135deg,#f59e0b,#d97706);padding:40px;text-align:center;">
+        <div style="font-size:60px;">🏆</div>
+        <h1 style="color:white;margin:8px 0 0;">¡CRÉDITO LIQUIDADO!</h1>
+      </div>
+      <div style="padding:40px 30px;">
+        <p style="color:#475569;">Hola <strong>{nombre}</strong>,</p>
+        <p style="color:#475569;">¡Felicidades! Has liquidado completamente tu crédito <strong>{folio}</strong>. Gracias por tu confianza en nosotros.</p>
+        <div style="background:#fffbeb;border-left:4px solid #f59e0b;padding:15px;border-radius:8px;">
+          <p style="color:#92400e;margin:0;font-size:14px;">🎉 Ya puedes solicitar un nuevo crédito desde la aplicación.</p>
+        </div>
+      </div>
+      <div style="text-align:center;padding:20px;font-size:12px;color:#94a3b8;border-top:1px solid #e2e8f0;">
+        <p>© {datetime.now().year} Monte sin Piedad</p>
+      </div>
+    </div></body></html>"""
+    try:
+        enviar_email_resend(destinatario, f"🏆 ¡Crédito {folio} liquidado!", html)
+    except Exception as e:
+        print(f"⚠️ Email liquidado no enviado: {e}")
+        
 # ── Emails de notificaciones de préstamo ──────────────────────────────────────
 
 def email_credito_aprobado(destinatario: str, nombre: str, folio: str,
